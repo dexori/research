@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
@@ -137,6 +138,60 @@ class GitWorkspace:
 
     def has_repo(self):
         return (self.repo / ".git").exists()
+
+    def network_git(self, *args, timeout=45):
+        """Retry only transient HTTPS transport errors, never auth/merge errors.
+
+        Routes come only from existing configuration/environment; no proxy is
+        invented, certificate verification is unchanged, and direct connections
+        are not used to bypass a configured proxy. Fetch/push retries are safe:
+        neither operation resets user data or force-pushes a branch.
+        """
+        remote = self.git("remote", "get-url", "origin", check=False).stdout.strip()
+        if not remote.startswith("https://github.com/"):
+            return self.git(*args, timeout=timeout)
+        configured = self.git("config", "--get-urlmatch", "http.proxy", remote, check=False).stdout.strip()
+        preferred = getattr(self, "network_proxy", None)
+        routes = [preferred, preferred]
+        seen = {configured, preferred}
+        for name in ["https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"]:
+            proxy = os.environ.get(name, "").strip()
+            if proxy.startswith("socks://"):
+                proxy = "socks5h://" + proxy[len("socks://"):]
+            try:
+                parsed = urlsplit(proxy)
+                usable = parsed.scheme in {"http", "https", "socks5", "socks5h"} and bool(parsed.hostname)
+            except ValueError:
+                usable = False
+            if not usable or proxy in seen:
+                continue
+            seen.add(proxy)
+            routes.append(proxy)
+        routes = routes[:4]
+        deadline = time.monotonic() + 90
+        for proxy in routes:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            options = ["-c", "http.version=HTTP/1.1"]
+            if proxy is not None:
+                options += ["-c", "http.https://github.com.proxy=" + proxy]
+            try:
+                result = self.git(*options, *args, timeout=min(timeout, remaining))
+                self.network_proxy = proxy
+                return result
+            except SyncError as error:
+                reason = str(error).lower()
+                transient = ["gnutls_handshake", "connection reset", "recv failure", "error in the pull function",
+                             "failed to connect", "could not resolve host", "could not resolve proxy",
+                             "tls connection was non-properly terminated", "empty reply from server",
+                             "the requested url returned error: 502", "the requested url returned error: 503",
+                             "the requested url returned error: 504", "连接 github 超时"]
+                # Even when mixed with a handshake message, certificate failures
+                # require diagnosis, not retries or reduced security.
+                if any(word in reason for word in ["certificate", "ssl peer", "证书"]) or not any(word in reason for word in transient):
+                    raise
+        raise SyncError("连接 GitHub 时网络中断，自动重试后仍未连接成功。本机资料和提交均已保留，不需要重新登录。请检查代理或网络，再点击同步。")
 
     def conflicts(self):
         if not self.has_repo():
@@ -359,7 +414,7 @@ class GitWorkspace:
         state = self.status()
         branch = state["branch"]
         # An ordinary merge retains both machines' commits and all local changes.
-        self.git("fetch", "origin")
+        self.network_git("fetch", "origin")
         ref = f"refs/remotes/origin/{branch}"
         if self.git("rev-parse", "--verify", ref, check=False).returncode == 0:
             staged = self.git("diff", "--cached", "--name-only").stdout.strip()
@@ -376,7 +431,7 @@ class GitWorkspace:
                 raise SyncError("GitHub 上没有所选分支，请填写仓库实际使用的分支名称。")
         self.stamps.clear()
         self.refresh(connection)
-        self.git("push", "origin", f"HEAD:refs/heads/{branch}")
+        self.network_git("push", "origin", f"HEAD:refs/heads/{branch}")
         stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
         connection.execute("INSERT OR REPLACE INTO settings VALUES ('last_git_sync',?)", (stamp,))
         connection.commit()
