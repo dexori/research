@@ -206,7 +206,7 @@ class GitWorkspace:
         if not self.has_repo():
             self.git("init", "-b", "main")
             # Only the app surface is selected; runtime data and secrets are excluded.
-            allowed = ["app.py", "git_sync.py", "github_auth.py", "codex_bridge.py", "draft_import.py", "research_cli.py", "math_compat.py", "paper_reader.py", "requirements.txt", "README.md", ".gitignore", ".gitattributes",
+            allowed = ["app.py", "git_sync.py", "github_auth.py", "codex_bridge.py", "draft_import.py", "research_cli.py", "math_compat.py", "paper_reader.py", "desktop_launcher.py", "requirements.txt", "README.md", ".gitignore", ".gitattributes",
                        "templates", "static", "tests", "research-hub.service.example", "workspace"]
             files = [path for path in allowed if (self.repo / path).exists()]
             if files:

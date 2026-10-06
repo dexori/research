@@ -170,6 +170,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
 
     @app.after_request
     def headers(response):
+        response.headers['X-Research-Hub'] = '1'
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "same-origin"
