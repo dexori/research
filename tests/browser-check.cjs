@@ -288,6 +288,7 @@ w=\begin{cases}
       await page.locator('[data-learning-progress].is-running').waitFor();
       await page.locator('[data-learning-status]').getByRole('link',{name:'审核并保存知识卡',exact:true}).waitFor();
       assert.equal(await page.locator('[data-learning-progress].is-running').count(),0);
+      assert.equal(await page.locator('[data-learning-jobs] [data-job-status]').first().textContent(),'草稿已生成，待审核');
       assert.match(await page.locator('[data-learning-events]').textContent(),/检查检索记录/);
       await page.locator('.learning-output summary').click();
       await page.locator('[data-learning-output] .katex').first().waitFor();

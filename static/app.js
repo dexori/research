@@ -150,6 +150,13 @@ async function pollLearning(url, target) {
     }
     if (token!==learningPoll) return;
     displayLearning(job);
+    const row=Array.from(document.querySelectorAll('[data-learning-job]')).find(item=>item.dataset.learningJob===url);
+    if (row) {
+      row.querySelector('[data-job-status]').textContent=job.status==='pending'?'检索与整理中…':job.status==='ready'?'草稿已生成，待审核':'未完成：'+job.error;
+      if (job.status==='ready' && !Array.from(row.querySelectorAll('a')).some(link=>link.getAttribute('href')===job.review_url)) {
+        const link=document.createElement('a'); link.className='text-link'; link.href=job.review_url; link.textContent='审核知识卡'; row.append(link);
+      }
+    }
     target.textContent=job.status==='pending' ? (job.progress?.detail || '检索与整理中…') : job.status==='ready' ? '草稿已生成，尚未保存。' : job.error;
     if (job.status!=='pending') {
       if (job.status==='ready') target.append(' ',learningReviewLink(job.review_url));
@@ -170,9 +177,9 @@ learningForm?.addEventListener('submit', async event => {
     if (!response.headers.get('content-type')?.includes('application/json')) throw new Error('页面已过期，请刷新或重新登录。');
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || '提交失败，请重试。');
-    const row = document.createElement('div'); row.className='learning-job';
+    const row = document.createElement('div'); row.className='learning-job'; row.dataset.learningJob=result.job_url;
     const title = document.createElement('strong'); title.textContent=learningForm.elements.topic.value;
-    jobStatus = document.createElement('span'); jobStatus.className='small muted'; jobStatus.textContent='检索与整理中…';
+    jobStatus = document.createElement('span'); jobStatus.className='small muted'; jobStatus.dataset.jobStatus=''; jobStatus.textContent='检索与整理中…';
     row.append(title, jobStatus);
     const view=document.createElement('a'); view.className='text-link'; view.textContent='查看过程'; view.href='/learning?job='+encodeURIComponent(result.job_url.split('/').pop()); row.append(view);
     document.querySelector('[data-learning-empty]')?.remove();
@@ -185,7 +192,6 @@ learningForm?.addEventListener('submit', async event => {
   }
   finally {
     button.disabled=false;
-    if (jobStatus) jobStatus.replaceChildren(...Array.from(target.childNodes,node=>node.cloneNode(true)));
   }
 });
 if (progressPanel?.dataset.jobUrl) {
