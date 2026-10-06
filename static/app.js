@@ -68,6 +68,37 @@ if (githubAuth) {
   });
   poll();
 }
+document.querySelectorAll('[data-codex-selection]').forEach(panel => {
+  const model=panel.querySelector('[data-model-select]'), effort=panel.querySelector('[data-effort-select]');
+  const custom=panel.querySelector('[data-custom-model]'), field=panel.querySelector('[data-custom-model-field]');
+  const key='research-hub:codex-selection:v1:'+panel.dataset.profile;
+  const validModel=value=>typeof value==='string' && /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,119}$/.test(value);
+  try {
+    const saved=JSON.parse(localStorage.getItem(key) || 'null');
+    if (saved && typeof saved==='object') {
+      if (validModel(saved.model)) {
+        model.value=Array.from(model.options).some(option=>option.value===saved.model)?saved.model:'__custom__';
+        custom.value=saved.model;
+      }
+      if (Array.from(effort.options).some(option=>option.value===saved.reasoning_effort)) effort.value=saved.reasoning_effort;
+    }
+  } catch { /* Storage can be unavailable; this call still works without persistence. */ }
+  function update(save=false) {
+    const isCustom=model.value==='__custom__', selected=isCustom?custom.value.trim():model.value;
+    field.hidden=!isCustom; custom.disabled=!isCustom; custom.required=isCustom;
+    custom.setCustomValidity(isCustom && selected && !validModel(selected)?'模型名称最多 120 字符，仅允许英文字母、数字及 _ . : / -。':'');
+    panel.querySelector('[data-model-summary]').textContent='下一次调用：'+(selected || (isCustom?'请填写模型名':panel.dataset.terminalModel+'（跟随终端）'))+' · '+(effort.value || panel.dataset.terminalEffort+'（跟随终端）');
+    if (save && (!isCustom || validModel(selected))) {
+      try { localStorage.setItem(key,JSON.stringify({model:selected,reasoning_effort:effort.value})); } catch { /* No credential or provider is stored. */ }
+    }
+  }
+  model.addEventListener('change',()=>update(true)); effort.addEventListener('change',()=>update(true)); custom.addEventListener('input',()=>update(true));
+  panel.querySelector('[data-model-reset]').addEventListener('click',()=>{
+    model.value=''; effort.value=''; custom.value=''; update();
+    try { localStorage.removeItem(key); } catch { /* Reset remains effective for this page. */ }
+  });
+  update();
+});
 const learningForm = document.querySelector('[data-learning-form]');
 document.querySelectorAll('[data-topic]').forEach(button => button.addEventListener('click', () => {
   const input = document.querySelector('#learning-topic');
@@ -88,6 +119,8 @@ function displayLearning(job) {
   progressPanel.classList.toggle('is-running', job.status==='pending');
   progressPanel.classList.toggle('has-error', job.status==='error');
   progressPanel.querySelector('[data-learning-progress-topic]').textContent=job.topic;
+  const selection=progress.selection;
+  progressPanel.querySelector('[data-learning-request-settings]').textContent=selection?'本次请求设置：'+selection.model+' · '+selection.reasoning_effort:'';
   progressPanel.querySelector('[data-learning-current]').textContent = progress.detail || '等待任务进度…';
   progressPanel.setAttribute('aria-label', '整理过程：'+job.topic);
   const received = Date.now(), seconds = job.elapsed_seconds || 0;

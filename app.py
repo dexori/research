@@ -25,7 +25,7 @@ from markupsafe import Markup
 from werkzeug.security import check_password_hash, generate_password_hash
 from git_sync import GitWorkspace, SyncError, atomic_write, UUID
 from github_auth import GitHubAuth
-from codex_bridge import CodexBridge, BridgeError, retrieve_notes
+from codex_bridge import CodexBridge, BridgeError, retrieve_notes, validate_selection, REASONING_EFFORTS
 from draft_import import MAX_BYTES as DRAFT_BYTES, SUFFIXES, decode_text, stage_draft, load_draft, list_drafts
 from math_compat import MathCompatExtension
 from paper_reader import PaperReader, PaperError
@@ -197,7 +197,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
     def context():
         return {"kinds": KINDS, "statuses": STATUSES, "csrf": csrf, "knowledge_categories": KNOWLEDGE_CATEGORIES,
                 "today": datetime.now().strftime("%Y年%m月%d日"), "app_name": "研序 Research Hub",
-                "workspace_error": workspace.error}
+                "workspace_error": workspace.error, "reasoning_efforts": REASONING_EFFORTS}
 
     def now():
         return datetime.now(timezone.utc).isoformat(timespec="microseconds")
@@ -220,7 +220,15 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             flash(str(error), 'error')
             return {'available': False, 'profile': 'Codex', 'model': '无法读取配置'}
 
-    def learning_worker(identifier, topic, project_id, mode):
+    def codex_selection():
+        model = request.form.get('model','').strip()
+        if model=='__custom__':
+            model = request.form.get('custom_model','').strip()
+            if not model:
+                raise BridgeError('请输入自定义模型名称。')
+        return validate_selection(model,request.form.get('reasoning_effort','').strip())
+
+    def learning_worker(identifier, topic, project_id, mode, selection):
         """Network work runs outside the workspace lock; only stage an unsaved draft."""
         def report(event):
             with app.app_context():
@@ -230,8 +238,8 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
                 save_learning_progress(identifier, event)
         try:
             bridge = app.extensions['codex_bridge']
-            result = (app.extensions['learning_researcher'].research(topic, bridge, on_progress=report) if mode=='public'
-                      else bridge.research_topic(topic, on_progress=report))
+            result = (app.extensions['learning_researcher'].research(topic, bridge, on_progress=report, **selection) if mode=='public'
+                      else bridge.research_topic(topic, on_progress=report, **selection))
             report({'stage':'validating','detail':'正在检查检索记录与引用来源；草稿尚未保存。','output':result.get('content','')})
             card = prepare_card(topic, result)
             with app.app_context(), workspace.lock:
@@ -268,6 +276,8 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         if not events or (events[-1]['stage'],events[-1]['detail'])!=(stage,detail):
             events.append({'stage':stage,'detail':detail,'at':stamp})
         state.update(stage=stage, detail=detail, events=events[-60:], updated_at=stamp)
+        if isinstance(event.get('selection'),dict):
+            state['selection'] = {key:str(event['selection'].get(key,'跟随终端'))[:120] for key in ('model','reasoning_effort')}
         if isinstance(event.get('output'),str):
             state['output'] = event['output'][:60000]
         if isinstance(event.get('sources'),list):
@@ -305,6 +315,10 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
 
     @app.post('/learning/start')
     def learning_start():
+        try:
+            selection = codex_selection()
+        except BridgeError as error:
+            return jsonify(error=str(error)), 400
         topic = request.form.get('topic', '').strip()
         project_id = request.form.get('project_id') or None
         mode = request.form.get('mode', 'public')
@@ -325,10 +339,10 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         identifier, stamp = uuid.uuid4().hex, now()
         db().execute('INSERT INTO learning_jobs VALUES (?,?,?,?,?,?,?,?)',
                      (identifier, topic, project_id, 'pending', None, '', stamp, stamp))
-        save_learning_progress(identifier, {'stage':'queued','detail':'主题已提交，准备检索资料。'})
+        save_learning_progress(identifier, {'stage':'queued','detail':'主题已提交，准备检索资料。', 'selection':selection})
         db().commit()
         try:
-            threading.Thread(target=learning_worker, args=(identifier, topic, project_id, mode), daemon=True).start()
+            threading.Thread(target=learning_worker, args=(identifier, topic, project_id, mode, selection), daemon=True).start()
         except RuntimeError:
             db().execute("UPDATE learning_jobs SET status='error',error='无法启动整理任务，请重试。' WHERE id=?", (identifier,))
             db().commit()
@@ -499,6 +513,10 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
 
     @app.post('/assistant/send')
     def assistant_send():
+        try:
+            selection = codex_selection()
+        except BridgeError as error:
+            return jsonify(error=str(error)), 400
         question = request.form.get('message', '').strip()
         if not question or len(question) > 4000:
             return jsonify(error='请输入问题，最多 4000 字。'), 400
@@ -587,7 +605,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         g.workspace_locked = False
         error = None
         try:
-            answer = bridge.answer(question, history, sources)
+            answer = bridge.answer(question, history, sources, **selection)
         except BridgeError as failure:
             error = str(failure)
             answer = error

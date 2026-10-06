@@ -21,6 +21,15 @@
 .paper-chat{margin-top:24px;min-width:0}.paper-chat-context{padding:18px 24px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.paper-chat-context p{margin:8px 0}.paper-chat-context strong{font-size:.875rem}.paper-chat .assistant-chat{min-height:500px}.paper-chat .assistant-chat-heading .button{flex-shrink:0}.assistant-help{padding:24px;margin-top:24px}.codex-setup{margin-top:16px;overflow-wrap:anywhere}.codex-setup summary,.paper-source summary{cursor:pointer;color:var(--green);line-height:1.8}.codex-setup ol{padding-left:20px;line-height:1.85}.codex-setup code{overflow-wrap:anywhere;white-space:normal}.paper-source form{margin:12px 0}.paper-source button{white-space:normal}.paper-text-preview{max-height:260px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:.75rem;background:var(--bg);padding:12px;border-radius:6px}
 @media(max-width:720px){.import-upload,.import-help,.import-review-info{padding:22px}.import-type-form select,.import-type-form button{width:100%}.import-upload .button{width:100%}.arithmatex.math-inline{font-size:.95em}}
 /* Topic research uses the existing workspace panels and responsive form styles. */
+.codex-selection { border: 1px solid var(--line); border-radius: 9px; padding: 14px; margin: 0 0 20px; background: #f7faf9; }
+.codex-selection-grid { display: grid; grid-template-columns: minmax(0,1.4fr) minmax(0,1fr); gap: 14px; }
+.codex-selection label { margin-top: 0; }
+.codex-selection select { min-width: 0; font-size: .8125rem; }
+.codex-selection-summary { margin: 10px 0 5px; overflow-wrap: anywhere; color: var(--green); }
+.codex-selection-help { margin: 5px 0 8px; }
+.codex-selection .text-button { padding: 0; border: 0; background: none; font-size: .8125rem; color: var(--green); cursor: pointer; }
+[data-custom-model-field] { margin-top: 12px; }
+@media(max-width:720px) { .codex-selection-grid { grid-template-columns: minmax(0,1fr); gap: 10px; } }
 .learning-panel { margin-bottom: 24px; padding: 26px; }
 .learning-panel form { max-width: 880px; }
 .learning-examples { margin: 12px 0 20px; }

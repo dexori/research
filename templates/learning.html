@@ -5,9 +5,10 @@
 <div class="learning-workbench">
 <section class="panel learning-panel">
   <h2>今天想学什么？</h2>
-  <p class="small muted">使用本机 {{ bridge.profile }} · {{ bridge.model }}。仅本功能允许联网检索，不会发送其他私有笔记；会使用终端服务的额度。搜索能力取决于当前服务，登录成功并不代表可搜索。</p>
+  <p class="small muted">使用本机 {{ bridge.profile }}，终端默认模型为 {{ bridge.model }}。仅本功能允许联网检索，不会发送其他私有笔记；会使用终端服务的额度。搜索能力取决于当前服务，登录成功并不代表可搜索。</p>
   <form data-learning-form action="{{ url_for('learning_start') }}" method="post">
     <input type="hidden" name="csrf" value="{{ csrf() }}">
+    {% set model_prefix='learning' %}{% include '_codex_selection.html' %}
     <label for="learning-mode">检索方式</label>
     <select id="learning-mode" name="mode"><option value="public">平台检索 arXiv 原论文（推荐，无需搜索 API Key）</option><option value="codex">Codex 网页搜索（当前服务尚未验证成功）</option></select>
     <p class="small muted">文献模式适合 ACT、π0 等论文主题：平台检索并提取正文，终端负责整理。它不是全网搜索；其他主题可补充英文术语。若需要官方文档等非论文来源，可尝试 Codex 网页搜索，但当前服务测试没有返回可用搜索记录。</p>
@@ -25,6 +26,7 @@
 <section class="panel learning-progress" data-learning-progress data-job-url="{{ selected_job_url }}" aria-label="整理过程">
   <div class="learning-progress-heading"><div><div class="eyebrow">LIVE PROGRESS</div><h2>整理过程</h2></div><span class="learning-clock" data-learning-clock>00:00</span></div>
   <p class="small muted learning-progress-topic" data-learning-progress-topic></p>
+  <p class="small muted" data-learning-request-settings></p>
   <p class="learning-current" data-learning-current role="status" aria-live="polite">输入主题后，这里会显示实际检索与生成过程。</p>
   <div class="learning-stages" aria-label="任务阶段">
     <span data-stage="planning">确定主题</span><span data-stage="searching">查找资料</span><span data-stage="reading">读取正文</span><span data-stage="generating">生成知识卡</span><span data-stage="validating">检查来源</span>

@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from codex_bridge import BridgeError, CodexBridge
+from codex_bridge import BridgeError, CodexBridge, validate_selection
 
 
 class CodexBridgeTest(unittest.TestCase):
@@ -17,6 +17,45 @@ class CodexBridgeTest(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_per_call_model_effort_flags_keep_config_and_safety(self):
+        profile=Path(self.temp.name)
+        config_path=profile/'config.toml'
+        config_path.write_text('model = "original-model"\nmodel_reasoning_effort = "low"\n')
+        before=config_path.read_bytes()
+        with patch('codex_bridge.shutil.which',return_value='/usr/bin/true'), patch.object(self.bridge,'profile',return_value=profile):
+            default=self.bridge.command()
+            for mode in [{},{'research':True},{'sourced_learning':True}]:
+                command=self.bridge.command(**mode,model='provider/research-model:1',reasoning_effort='high')
+                self.assertEqual(command[command.index('--model')+1],'provider/research-model:1')
+                self.assertIn('model_reasoning_effort="high"',command)
+                self.assertIn('read-only',command)
+                self.assertIn('features.shell_tool=false',command)
+                self.assertIn('web_search="live"' if mode.get('research') else 'web_search="disabled"',command)
+            self.assertNotIn('--model',default)
+            self.assertFalse(any(value.startswith('model_reasoning_effort=') for value in default))
+        self.assertEqual(config_path.read_bytes(),before)
+
+    def test_selection_validation_rejects_argument_and_config_injection(self):
+        for model in ['--full-auto','model name','model\nvalue','model";x','x'*121,'中文模型']:
+            with self.assertRaises(BridgeError): validate_selection(model,'high')
+        for effort in ['invalid','high\nweb_search=live','"high"']:
+            with self.assertRaises(BridgeError): validate_selection('safe-model',effort)
+        self.assertEqual(validate_selection(),{})
+        for effort in ['low','medium','high','xhigh','max','ultra']:
+            self.assertEqual(validate_selection('safe-model',effort)['reasoning_effort'],effort)
+
+    def test_answer_and_native_research_forward_selection(self):
+        process=Mock(returncode=0)
+        process.poll.return_value=0
+        process.communicate.return_value=(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'public'}}),None)
+        with patch.object(self.bridge,'command',return_value=['/fixed']) as command, patch('codex_bridge.subprocess.Popen',return_value=process):
+            for mode in [{},{'sourced_learning':True}]:
+                self.assertEqual(self.bridge.answer('question',[],[],**mode,model='chosen-model',reasoning_effort='medium'),'public')
+                command.assert_called_with(**mode,model='chosen-model',reasoning_effort='medium')
+        with patch.object(self.bridge,'answer') as answer:
+            self.bridge.research_topic('topic',model='chosen-model',reasoning_effort='high')
+            answer.assert_called_once_with('topic',[],[],timeout=240,research=True,model='chosen-model',reasoning_effort='high')
 
     def test_streamed_public_events_arrive_before_completion(self):
         script = """import sys,json,time

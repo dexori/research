@@ -1,0 +1,22 @@
+<div class="codex-selection" data-codex-selection data-terminal-model="{{ bridge.model }}" data-terminal-effort="{{ bridge.reasoning_effort|default('终端默认') }}" data-profile="{{ bridge.profile }}">
+  <div class="codex-selection-grid">
+    <div><label for="{{ model_prefix }}-model">模型</label>
+      <select id="{{ model_prefix }}-model" name="model" data-model-select>
+        <option value="">跟随终端 · {{ bridge.model }}</option>
+        {% if bridge.model not in ['跟随终端默认模型','无法读取配置'] %}<option value="{{ bridge.model }}">{{ bridge.model }} · 指定名称</option>{% endif %}
+        {% if bridge.model!='gpt-6.1-sol' %}<option value="gpt-6.1-sol">gpt-6.1-sol · 名称预设，未验证权限</option>{% endif %}
+        <option value="__custom__">自定义模型名称…</option>
+      </select>
+    </div>
+    <div><label for="{{ model_prefix }}-effort">思考强度</label>
+      <select id="{{ model_prefix }}-effort" name="reasoning_effort" data-effort-select>
+        <option value="">跟随终端 · {{ bridge.reasoning_effort|default('默认') }}</option>
+        {% for effort in reasoning_efforts %}<option value="{{ effort }}">{{ {'low':'低','medium':'中','high':'高','xhigh':'更高','max':'Max','ultra':'Ultra'}[effort] }} · {{ effort }}</option>{% endfor %}
+      </select>
+    </div>
+  </div>
+  <div data-custom-model-field hidden><label for="{{ model_prefix }}-custom-model">服务提供的模型名称</label><input id="{{ model_prefix }}-custom-model" name="custom_model" data-custom-model maxlength="120" placeholder="填写准确的模型 ID，不是 API Key" autocomplete="off" disabled></div>
+  <p class="small muted codex-selection-summary" data-model-summary aria-live="polite">下一次调用跟随终端配置。</p>
+  <p class="small muted codex-selection-help">仅在本浏览器记住选择，不修改终端配置。模型与档位需当前服务支持；名称预设不代表已验证可用，不支持时会报错。</p>
+  <button type="button" class="text-button" data-model-reset>恢复跟随终端</button>
+</div>

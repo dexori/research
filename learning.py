@@ -9,7 +9,7 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 
-from codex_bridge import BridgeError
+from codex_bridge import BridgeError, validate_selection
 from paper_reader import PaperReader, PaperError, download
 
 CATEGORIES = ['模型架构', '训练方法', '数学基础', '工程实践', '其他']
@@ -28,13 +28,14 @@ class PublicLearningSearch:
         self.gate = threading.Lock()
         self.last_request = 0
 
-    def query(self, topic, bridge):
+    def query(self, topic, bridge, *, model='', reasoning_effort=''):
         for pattern, query in ALIASES:
             if re.search(pattern, topic, re.I):
                 return query
         raw = bridge.answer('将下列学习主题转换为 arXiv 文献检索用英文关键词。只输出 JSON，格式 '
                             '{"keywords":["短语1","短语2"]}，1–3 个短语，每项最多 60 字符。不要回答知识内容，'
-                            '不要给链接，歧义时采用科研/机器学习语境。主题：'+topic, [], [], timeout=90)
+                            '不要给链接，歧义时采用科研/机器学习语境。主题：'+topic, [], [], timeout=90,
+                            **validate_selection(model, reasoning_effort))
         raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw.strip())
         try:
             keywords = json.loads(raw)['keywords']
@@ -76,13 +77,14 @@ class PublicLearningSearch:
             raise BridgeError('arXiv 未找到可读取的论文，请补充英文主题或改用 Codex 网页搜索。')
         return sources
 
-    def research(self, topic, bridge, on_progress=None):
+    def research(self, topic, bridge, on_progress=None, *, model='', reasoning_effort=''):
+        selection = validate_selection(model, reasoning_effort)
         def report(stage, detail, **values):
             if on_progress:
                 on_progress({'stage':stage,'detail':detail,**values})
         try:
             report('planning','正在确定主题范围与英文检索词。')
-            query = self.query(topic,bridge)
+            query = self.query(topic,bridge,**selection)
             report('searching','正在查询 arXiv：'+query)
             candidates = self.search(query)
             visible = [{'title':s['title'],'url':s['url'],'scope':'待读取'} for s in candidates[:2]]
@@ -113,6 +115,7 @@ class PublicLearningSearch:
                 raise BridgeError('已检索到论文，但正文读取失败；未生成知识卡。请检查论文网络或改用 Codex 网页搜索。')
             report('generating','已提交公开论文资料，等待终端生成知识卡。',sources=visible)
             options = {'on_progress':on_progress} if on_progress else {}
+            options.update(selection)
             content = bridge.answer(topic, [], sources, timeout=240, sourced_learning=True, **options)
             receipt = '\n\n## 平台实际检索来源\n\n'
             for source in sources:

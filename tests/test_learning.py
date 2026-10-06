@@ -30,7 +30,7 @@ class LearningTest(unittest.TestCase):
         self.bridge.research_topic.return_value = {'content': CARD, 'search_count':2}
         self.app.extensions['codex_bridge'] = self.bridge
         researcher = Mock()
-        researcher.research.side_effect=lambda topic, bridge, on_progress=None: bridge.research_topic(topic)
+        researcher.research.side_effect=lambda topic, bridge, on_progress=None, **selection: bridge.research_topic(topic,**selection)
         self.app.extensions['learning_researcher'] = researcher
 
     def tearDown(self):
@@ -117,6 +117,24 @@ class LearningTest(unittest.TestCase):
         with self.connection() as connection:
             self.assertEqual(connection.execute('SELECT count(*) FROM entries').fetchone()[0], 0)
         self.assertEqual(self.client.get('/learning/job/missing').status_code, 404)
+
+    def test_learning_freezes_requested_selection_and_rejects_invalid_settings(self):
+        for fields in [{'model':'--bad'},{'model':'__custom__','custom_model':''},{'reasoning_effort':'bad'}]:
+            self.assertEqual(self.post('/learning/start',topic='ACT',**fields).status_code,400)
+        with self.connection() as connection:
+            self.assertEqual(connection.execute('SELECT count(*) FROM learning_jobs').fetchone()[0],0)
+        response=self.post('/learning/start',topic='ACT',model='__custom__',custom_model='provider/model:1',reasoning_effort='xhigh')
+        job=self.wait_job(response.json['job_url'])
+        self.assertEqual(job['status'],'ready')
+        self.assertEqual(job['progress']['selection'],{'model':'provider/model:1','reasoning_effort':'xhigh'})
+        self.bridge.research_topic.assert_called_once_with('ACT',model='provider/model:1',reasoning_effort='xhigh')
+        self.bridge.reset_mock()
+        response=self.post('/learning/start',topic='ACT',mode='codex',model='native-model',reasoning_effort='medium')
+        self.assertEqual(self.wait_job(response.json['job_url'])['status'],'ready')
+        call=self.bridge.research_topic.call_args
+        self.assertEqual(call.kwargs['model'],'native-model')
+        self.assertEqual(call.kwargs['reasoning_effort'],'medium')
+        self.assertTrue(callable(call.kwargs['on_progress']))
 
     def test_pending_duplicate_reload_and_stale_task(self):
         release = threading.Event()
@@ -257,7 +275,7 @@ class LearningTest(unittest.TestCase):
         observed=[]
         with patch.object(search,'search',return_value=[{'url':'https://arxiv.org/abs/2304.13705','title':'ACT','summary':'abstract'}]), patch('learning.PaperReader') as reader:
             reader.return_value.read.return_value={'text':'full paper '*5000,'method':'PDF 提取','pages':10,'pages_read':10,'truncated':False}
-            result=search.research('ACT',bridge,on_progress=lambda event:observed.append(json.loads(json.dumps(event))))
+            result=search.research('ACT',bridge,on_progress=lambda event:observed.append(json.loads(json.dumps(event))),model='card-model',reasoning_effort='medium')
         self.assertEqual([event['stage'] for event in observed],
                          ['planning','searching','searching','reading','reading','generating'])
         self.assertEqual(observed[2]['sources'][0]['scope'],'待读取')
@@ -265,12 +283,17 @@ class LearningTest(unittest.TestCase):
         self.assertIn('40,000',observed[-1]['sources'][0]['scope'])
         self.assertEqual(observed[-1]['sources'][0]['url'],result['source_urls'][0])
         self.assertIn('on_progress',bridge.answer.call_args.kwargs)
+        self.assertEqual(bridge.answer.call_args.kwargs['model'],'card-model')
+        self.assertEqual(bridge.answer.call_args.kwargs['reasoning_effort'],'medium')
 
     def test_unknown_topic_query_and_sourced_command_are_restricted(self):
         search=PublicLearningSearch()
         bridge=Mock()
         bridge.answer.return_value='```json\n{"keywords":["diffusion policy","robot"]}\n```'
         self.assertEqual(search.query('机器人扩散策略',bridge),'all:"diffusion policy" AND all:"robot"')
+        search.query('机器人扩散策略',bridge,model='keyword-model',reasoning_effort='low')
+        self.assertEqual(bridge.answer.call_args.kwargs['model'],'keyword-model')
+        self.assertEqual(bridge.answer.call_args.kwargs['reasoning_effort'],'low')
         bridge.answer.return_value='{"keywords":["unsafe\" OR all:everything"]}'
         with self.assertRaises(BridgeError):search.query('中文主题',bridge)
         native=CodexBridge(self.directory)

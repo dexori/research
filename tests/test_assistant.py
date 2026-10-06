@@ -17,13 +17,15 @@ class FakeCodex:
         self.calls = []
         self.fail = False
         self.available = True
+        self.selections = []
 
     def status(self):
         return {'available':self.available,'profile':'测试终端','model':'测试模型','read_only':True}
 
-    def answer(self, question, history, sources):
+    def answer(self, question, history, sources, **selection):
         assert not self.workspace.lock._is_owned(), 'Long CLI invocation must not lock the workspace'
         self.calls.append((question, history, sources))
+        self.selections.append(selection)
         if self.fail:
             raise BridgeError('隔离测试：网络错误，问题已保留。')
         return '## 待验证的假设\n\n**讨论草稿**。<script>alert(1)</script>\n\n' + (
@@ -96,6 +98,28 @@ class AssistantTest(unittest.TestCase):
         self.assertIn('DTW'.encode(),self.client.get('/assistant?thread='+payload['thread_id']).data)
         restarted = create_app(self.temp.name,testing=True)
         self.assertEqual(restarted.config['SECRET_KEY'],self.app.config['SECRET_KEY'])
+
+    def test_model_selection_is_per_turn_and_invalid_selection_never_starts(self):
+        for fields in [{'model':'--bad'},{'model':'__custom__','custom_model':''},
+                       {'reasoning_effort':'invalid'},{'model':'name\n-c dangerous=true'}]:
+            self.assertEqual(self.post('/assistant/send',message='test',**fields).status_code,400)
+        with self.connection() as connection:
+            self.assertEqual(connection.execute('SELECT count(*) FROM ai_threads').fetchone()[0],0)
+        chosen=self.post('/assistant/send',message='test',model='__custom__',custom_model='provider/model:1',reasoning_effort='high')
+        self.assertEqual(chosen.status_code,200)
+        self.assertEqual(self.bridge.selections[-1],{'model':'provider/model:1','reasoning_effort':'high'})
+        self.assertEqual(self.post('/assistant/send',message='follow default',thread_id=chosen.json['thread_id']).status_code,200)
+        self.assertEqual(self.bridge.selections[-1],{})
+        self.assertEqual(self.bridge.status()['model'],'测试模型')
+
+    def test_selected_model_failure_is_not_retried_with_default(self):
+        self.bridge.fail=True
+        response=self.post('/assistant/send',message='test',model='unsupported-model',reasoning_effort='high')
+        self.assertEqual(response.status_code,502)
+        self.assertEqual(len(self.bridge.calls),1)
+        self.assertEqual(self.bridge.selections,[{'model':'unsupported-model','reasoning_effort':'high'}])
+        with self.connection() as connection:
+            self.assertEqual(connection.execute('SELECT count(*) FROM entries').fetchone()[0],0)
 
     def test_project_scope_pinned_context_and_cannot_change_thread_scope(self):
         project = self.make('project',title='项目 A')
