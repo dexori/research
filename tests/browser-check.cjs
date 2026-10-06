@@ -9,7 +9,7 @@ const crypto = require('node:crypto');
   const output = path.join(__dirname, '..', 'artifacts');
   fs.mkdirSync(output, { recursive: true });
   const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true, args: ['--no-sandbox'] });
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1080 }, acceptDownloads: true });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1080 }, acceptDownloads: true, reducedMotion:'reduce' });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -114,6 +114,9 @@ const crypto = require('node:crypto');
     assert.match(await page.locator('.sync-stats').textContent(), /已配置/);
     await page.screenshot({path:path.join(output,'github-sync-desktop.png'),fullPage:true});
     await page.setViewportSize({width:390,height:844});
+    await page.locator('.github-new-computer summary').click();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth),false);
+    await page.screenshot({path:path.join(output,'github-new-computer-mobile.png'),fullPage:true});
     for (const route of ['/', '/library/paper','/library/experiment','/library/dataset','/library/idea','/library/writing','/new/paper','/new/experiment','/backup','/sync', new URL(paperUrl).pathname,new URL(experimentUrl).pathname]) {
       await page.goto(base + route);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
