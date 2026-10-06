@@ -20,7 +20,7 @@ class GitSyncTest(unittest.TestCase):
         subprocess.run(["git", "init", "--bare", "-b", "main", str(self.remote)], check=True, capture_output=True)
         self.repo_a = self.root / "computer-a"
         self.repo_a.mkdir()
-        for file in ["app.py", "git_sync.py", "github_auth.py", "codex_bridge.py", "draft_import.py", "research_cli.py", ".gitignore", ".gitattributes", "requirements.txt", "README.md"]:
+        for file in ["app.py", "git_sync.py", "github_auth.py", "codex_bridge.py", "draft_import.py", "research_cli.py", "math_compat.py", ".gitignore", ".gitattributes", "requirements.txt", "README.md"]:
             shutil.copyfile(ROOT / file, self.repo_a / file)
         self.a = create_app(self.repo_a / "data", testing=True, repo_dir=self.repo_a)
         self.client_a = self.setup_client(self.a)

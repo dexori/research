@@ -26,6 +26,7 @@ from git_sync import GitWorkspace, SyncError
 from github_auth import GitHubAuth
 from codex_bridge import CodexBridge, BridgeError, retrieve_notes
 from draft_import import MAX_BYTES as DRAFT_BYTES, SUFFIXES, decode_text, stage_draft, load_draft, list_drafts
+from math_compat import MathCompatExtension
 
 ROOT = Path(__file__).resolve().parent
 KINDS = {
@@ -196,7 +197,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         return db().execute("SELECT id,title FROM entries WHERE kind='project' ORDER BY title").fetchall()
 
     def render_md(text):
-        html = markdown.markdown(text, extensions=["fenced_code", "tables", "sane_lists", "pymdownx.arithmatex"],
+        html = markdown.markdown(text, extensions=["fenced_code", "tables", "sane_lists", "pymdownx.arithmatex", MathCompatExtension()],
                                  extension_configs={"pymdownx.arithmatex":{"generic":True}})
         def safe_attribute(tag, name, value):
             if tag=='a':

@@ -197,6 +197,20 @@ a_t &= g_\phi(z_t)
 \end{aligned}
 $$
 
+粘贴的窗口 \\(H\\)，动作表示 \\(\widetilde A\\)。
+使用 DTW 得到：
+\[
+d_{ij}^{H}=\operatorname{DTW}(A_i,A_j)
+\]
+继续权重：
+\[
+w=\begin{cases}
+1-F_H(d_{ij}^H), & \text{有效正样本}\\
+0, & \text{其他}
+\end{cases}
+\]
+后续正文。
+
 坏公式 $\unsupportedmacro$ 应保留原文。
 
 链接命令 $\href{javascript:alert(1)}{禁止链接}$ 不得产生可点击链接。
@@ -213,8 +227,10 @@ $$
       assert.equal(await page.getByRole('link',{name:/终端导入的表示学习讨论/}).count(),1);
       await page.goto(draftUrl);
       await page.locator('.import-preview .katex').first().waitFor();
-      assert.ok(await page.locator('.import-preview .katex').count()>=5);
-      assert.equal(await page.locator('.import-preview .katex-display').count(),3);
+      assert.ok(await page.locator('.import-preview .katex').count()>=9);
+      assert.equal(await page.locator('.import-preview .katex-display').count(),5);
+      assert.equal(await page.locator('.import-preview .math-fallback').count(),1);
+      assert.equal(await page.locator('.import-preview .katex .mtable').count()>=2,true);
       assert.equal(await page.locator('.import-preview pre .katex,.import-preview code .katex').count(),0);
       assert.match(await page.locator('.import-preview .math-fallback').textContent(),/unsupportedmacro/);
       assert.equal(await page.locator('.import-preview .arithmatex a').count(),0);
@@ -231,7 +247,7 @@ $$
       await page.getByRole('button',{name:'保存草稿',exact:true}).click();
       const savedUrl = page.url();
       await page.getByRole('heading',{name:'审核后的公式讨论',exact:true}).waitFor();
-      assert.ok(await page.locator('.prose .katex').count()>=5);
+      assert.ok(await page.locator('.prose .katex').count()>=9);
       await page.goto(draftUrl);
       assert.equal(page.url(),savedUrl);
       // Also exercise webpage upload; preview alone must not create a record.

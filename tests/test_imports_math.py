@@ -155,6 +155,22 @@ $$
         entry_id = saved.location.split('/')[-1]
         self.assertTrue((self.directory/'checkout/workspace/records'/f'{entry_id}.md').exists())
 
+    def test_compat_math_is_display_only_and_html_remains_sanitized(self):
+        text = r'窗口 \\(H\\)。正文\[x < y\]后文。'+'\n'+r'\[\text{<img src=x onerror=alert(1)>}\]'
+        response=self.post('/new/paper',title='原文不可修改',content=text,status='进行中')
+        identifier=response.location.split('/')[-1]
+        path=self.directory/'checkout/workspace/records'/f'{identifier}.md'
+        original=path.read_bytes()
+        page=self.client.get(response.location)
+        self.assertEqual(page.status_code,200)
+        self.assertGreaterEqual(page.data.count(b'class="arithmatex"'),2)
+        self.assertNotIn(b'<img',page.data)
+        with self.connection() as connection:
+            row=connection.execute('SELECT content,version FROM entries WHERE id=?',(identifier,)).fetchone()
+            self.assertEqual(row['content'],text)
+            self.assertEqual(row['version'],1)
+        self.assertEqual(path.read_bytes(),original)
+
 
 if __name__=='__main__':
     unittest.main()
