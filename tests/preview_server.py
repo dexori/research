@@ -13,6 +13,8 @@ parser.add_argument('--fake-codex', action='store_true', help='Isolated determin
 args = parser.parse_args()
 
 class PreviewCodex:
+    def login_status(self):
+        return {'status':'signed_in','message':'隔离测试：CLI 报告已登录；没有调用模型。'}
     def status(self):
         return {'available':True,'profile':'隔离测试终端','model':'浏览器测试模型','read_only':True}
 
@@ -25,4 +27,8 @@ with tempfile.TemporaryDirectory(prefix="research-browser-") as directory:
     app = create_app(directory, testing=True)
     if args.fake_codex:
         app.extensions['codex_bridge'] = PreviewCodex()
+        class PreviewPaper:
+            def read(self, **kwargs):
+                return {'text':'隔离测试论文正文：方法、证据与局限。'*80,'method':'隔离 PDF 测试','pages':2,'pages_read':2,'truncated':False}
+        app.extensions['paper_reader'] = PreviewPaper()
     serve(app, host="127.0.0.1", port=8766)

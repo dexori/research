@@ -20,4 +20,5 @@
 .venv/bin/python app.py</pre>Windows PowerShell：<pre>py -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 .venv\Scripts\python.exe app.py</pre></li><li>打开 <a class="text-link" href="http://127.0.0.1:8765">http://127.0.0.1:8765</a>，设置该电脑的本机访问密码。</li><li>在本页面点击「登录 GitHub」，复制授权码到 GitHub 官方页面确认。工具会自动准备；连接超时可重试。</li><li>填写同一个 HTTPS 仓库地址与分支，保存设置，再点击「同步到 GitHub」。之后开始和离开工作时各同步一次。</li></ol><p class="small muted">已有 Git 凭据的电脑也可以直接 git clone。只在新电脑首次安装时需要以上步骤，原电脑无需在线。</p></details></section>
+<section class="panel assistant-help"><h2>新电脑的科研助手</h2>{% include '_codex_setup.html' %}</section><script defer src="{{ url_for('static',filename='assistant.js') }}"></script>
 {% endblock %}

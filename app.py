@@ -22,11 +22,12 @@ from flask import Flask, abort, flash, g, jsonify, redirect, render_template, re
 import markdown
 from markupsafe import Markup
 from werkzeug.security import check_password_hash, generate_password_hash
-from git_sync import GitWorkspace, SyncError
+from git_sync import GitWorkspace, SyncError, atomic_write, UUID
 from github_auth import GitHubAuth
 from codex_bridge import CodexBridge, BridgeError, retrieve_notes
 from draft_import import MAX_BYTES as DRAFT_BYTES, SUFFIXES, decode_text, stage_draft, load_draft, list_drafts
 from math_compat import MathCompatExtension
+from paper_reader import PaperReader, PaperError
 
 ROOT = Path(__file__).resolve().parent
 KINDS = {
@@ -58,6 +59,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
     github = GitHubAuth(workspace, auto_check=not testing)
     app.extensions["github_auth"] = github
     app.extensions["codex_bridge"] = CodexBridge(directory)
+    app.extensions["paper_reader"] = PaperReader()
     secret_path = directory / "session.key"
     try:
         fd = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -162,7 +164,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             except (SyncError, OSError) as error:
                 db().rollback()
                 workspace.error = str(error)
-            if request.method == "POST" and request.endpoint not in {"sync_configure", "sync_run", "sync_resolve", "github_login", "assistant_send"}:
+            if request.method == "POST" and request.endpoint not in {"sync_configure", "sync_run", "sync_resolve", "github_login", "assistant_send", "codex_check"}:
                 if workspace.conflicts() or workspace.error:
                     abort(409, "同步资料需要检查。请先打开「GitHub 同步」处理冲突或附件缺失，再编辑记录。")
 
@@ -195,6 +197,93 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
 
     def projects():
         return db().execute("SELECT id,title FROM entries WHERE kind='project' ORDER BY title").fetchall()
+
+    def bridge_status():
+        try:
+            return app.extensions['codex_bridge'].status()
+        except BridgeError as error:
+            flash(str(error), 'error')
+            return {'available': False, 'profile': 'Codex', 'model': '无法读取配置'}
+
+    def paper_source(entry):
+        """Only accept a cache owned by this record and matching its current URL."""
+        name = entry['meta'].get('paper_source', '')
+        source = None
+        if UUID.fullmatch(name):
+            row = db().execute('SELECT * FROM attachments WHERE entry_id=? AND storage_name=?',
+                               (entry['id'], name)).fetchone()
+            path = directory / 'uploads' / name
+            if row and path.is_file() and not path.is_symlink() and path.stat().st_size <= 1500000:
+                try:
+                    payload = json.loads(path.read_text(encoding='utf-8'))
+                    if (payload.get('entry_id') == entry['id'] and payload.get('requested_url') == entry['meta'].get('url', '')
+                            and isinstance(payload.get('text'), str) and 200 <= len(payload['text']) <= 180000):
+                        source = payload
+                except (OSError, ValueError, AttributeError):
+                    pass
+        if source:
+            return {'status': 'ready', 'message': f"已提取正文 · {len(source['text']):,} 字符", 'source': source}
+        if entry['meta'].get('paper_source_error'):
+            try:
+                failure = json.loads(entry['meta']['paper_source_error'])
+                if failure.get('url') == entry['meta'].get('url', ''):
+                    return {'status': 'error', 'message': failure['message']}
+            except (ValueError, KeyError, AttributeError):
+                pass
+        return {'status': 'missing', 'message': '尚未读取论文正文；链接本身不等于正文。'}
+
+    def read_paper(entry, attachment_id=None):
+        """Do network/parser work without holding the research workspace lock."""
+        original_url = entry['meta'].get('url', '')
+        previous_source = entry['meta'].get('paper_source', '')
+        raw, attachment_name = None, None
+        if attachment_id:
+            row = db().execute('SELECT * FROM attachments WHERE id=? AND entry_id=?',
+                               (attachment_id, entry['id'])).fetchone()
+            if not row or not row['name'].lower().endswith('.pdf'):
+                raise PaperError('请选择这篇文献的 PDF 附件。')
+            path = directory / 'uploads' / row['storage_name']
+            if row['size'] > 20 * 1024 * 1024 or path.is_symlink():
+                raise PaperError('PDF 超过 20 MB 读取上限或路径无效。')
+            raw = path.read_bytes()
+            attachment_name = row['name']
+        elif not original_url:
+            raise PaperError('请先填写论文链接，或选择已上传的 PDF。')
+        workspace.lock.release()
+        g.workspace_locked = False
+        result, failure = None, None
+        try:
+            result = app.extensions['paper_reader'].read(url=original_url, raw=raw)
+        except PaperError as error:
+            failure = str(error)
+        finally:
+            workspace.lock.acquire()
+            g.workspace_locked = True
+        workspace.refresh(db())
+        current = get_entry(entry['id'])
+        if current['meta'].get('url', '') != original_url or current['meta'].get('paper_source', '') != previous_source:
+            raise PaperError('读取期间链接或正文缓存已更新，请刷新页面；未覆盖新资料。')
+        meta = dict(current['meta'])
+        stamp = now()
+        if failure:
+            meta['paper_source_error'] = json.dumps({'url': original_url, 'message': failure}, ensure_ascii=False)
+        else:
+            result.update(entry_id=entry['id'], requested_url=original_url, read_at=stamp,
+                          attachment_name=attachment_name)
+            storage_name = uuid.uuid4().hex
+            raw_cache = json.dumps(result, ensure_ascii=False).encode('utf-8')
+            atomic_write(directory / 'uploads' / storage_name, raw_cache)
+            db().execute('INSERT INTO attachments VALUES (?,?,?,?,?,?)',
+                         (uuid.uuid4().hex, entry['id'], '论文原文-提取.json', storage_name, len(raw_cache), stamp))
+            meta['paper_source'] = storage_name
+            meta.pop('paper_source_error', None)
+        db().execute('UPDATE entries SET metadata=?,updated_at=?,version=version+1 WHERE id=?',
+                     (json.dumps(meta, ensure_ascii=False), stamp, entry['id']))
+        workspace.write_entry(db(), entry['id'])
+        db().commit()
+        if failure:
+            raise PaperError(failure)
+        return paper_source(get_entry(entry['id']))
 
     def render_md(text):
         html = markdown.markdown(text, extensions=["fenced_code", "tables", "sane_lists", "pymdownx.arithmatex", MathCompatExtension()],
@@ -231,16 +320,13 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
     def assistant_page():
         identifier = request.args.get('thread')
         thread = chat_thread(identifier) if identifier else None
-        context = get_entry(request.args['entry']) if request.args.get('entry') and not thread else None
-        threads = db().execute('SELECT * FROM ai_threads ORDER BY updated_at DESC LIMIT 40').fetchall()
-        try:
-            bridge_state = app.extensions['codex_bridge'].status()
-        except BridgeError as error:
-            bridge_state = {'available': False, 'profile': 'Codex', 'model': '无法读取配置'}
-            flash(str(error), 'error')
-        return render_template('assistant.html', active='assistant', bridge=bridge_state,
+        context_id = thread['context_id'] if thread else request.args.get('entry')
+        context = get_entry(context_id) if context_id else None
+        threads = db().execute('SELECT * FROM ai_threads WHERE context_id=? ORDER BY updated_at DESC LIMIT 40',
+                               (context_id,)).fetchall() if context_id else db().execute('SELECT * FROM ai_threads ORDER BY updated_at DESC LIMIT 40').fetchall()
+        return render_template('assistant.html', active='assistant', bridge=bridge_status(),
                                thread=thread, threads=threads, messages=chat_messages(identifier) if thread else [],
-                               projects=projects(), context=context)
+                               projects=projects(), context=context, paper=paper_source(context) if context and context['kind']=='paper' else None)
 
     @app.get('/assistant/thread/<identifier>')
     def assistant_thread(identifier):
@@ -251,6 +337,12 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
                      (identifier,cutoff))
         db().commit()
         return jsonify(thread=thread,messages=chat_messages(identifier))
+
+    @app.post('/assistant/connection/check')
+    def codex_check():
+        workspace.lock.release()
+        g.workspace_locked = False
+        return jsonify(app.extensions['codex_bridge'].login_status())
 
     @app.post('/assistant/send')
     def assistant_send():
@@ -286,7 +378,44 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         previous = chat_messages(identifier)
         previous_ids = [source['id'] for message in previous[-4:] for source in message['sources']]
         sources = retrieve_notes(db(), question, thread['project_id'], previous_ids, thread['context_id'])
-        references = [{key: note[key] for key in ['id','title','kind','version']} for note in sources]
+        paper_budget = 65000 if thread['context_id'] and sources and sources[0]['kind']=='paper' else 20000
+        for source in sources:
+            if source['kind'] != 'paper':
+                continue
+            entry = get_entry(source['id'])
+            state = paper_source(entry)
+            # Only the explicitly selected paper is downloaded, never all search hits.
+            if source['id'] == thread['context_id'] and state['status'] == 'missing' and entry['meta'].get('url'):
+                try:
+                    state = read_paper(entry)
+                except PaperError as error:
+                    state = {'status': 'error', 'message': str(error)}
+                except (OSError, SyncError):
+                    db().rollback()
+                    state = {'status': 'error', 'message': '原文缓存保存失败，本次只提供笔记；请检查磁盘与同步状态。'}
+                refreshed = get_entry(source['id'])
+                source.update(version=refreshed['version'], title=refreshed['title'], metadata=refreshed['meta'],
+                              content=refreshed['content'][:10000], truncated=len(refreshed['content'])>10000)
+            if state['status'] == 'ready':
+                original = state['source']
+                # Bound the context; disclose exactly which portion the model receives.
+                limit = min(paper_budget, 65000 if source['id'] == thread['context_id'] else 8000)
+                source['paper_text'] = original['text'][:limit]
+                paper_budget -= len(source['paper_text'])
+                source['paper_reading'] = {k: v for k, v in original.items() if k != 'text'}
+                source['paper_reading'].update(sent_chars=len(source['paper_text']),
+                                              context_truncated=len(original['text']) > limit)
+            else:
+                source['paper_reading'] = {'status': state['status'], 'message': state['message']}
+        references = []
+        for note in sources:
+            reference = {key: note[key] for key in ['id','title','kind','version']}
+            if 'paper_text' in note:
+                reference.update(paper_chars=len(note['paper_text']), paper_truncated=note['paper_reading']['context_truncated'])
+            references.append(reference)
+        # Fetching a paper releases the lock; another turn may have started meanwhile.
+        if db().execute("SELECT 1 FROM ai_messages WHERE thread_id=? AND status='pending'", (identifier,)).fetchone():
+            return jsonify(error='这段对话已有问题正在回答，请等待完成。'), 409
         message_id, answer_id = uuid.uuid4().hex, uuid.uuid4().hex
         db().execute("INSERT INTO ai_messages (id,thread_id,role,content,created_at) VALUES (?,?,'user',?,?)",
                      (message_id, identifier, question, now()))
@@ -296,6 +425,10 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         db().commit()
         history = [{'role': item['role'], 'content': item['content'][:2000]}
                    for item in previous if item['status']=='complete'][-10:]
+        if thread['context_id'] and sources and sources[0]['kind']=='paper':
+            history = [{'role': item['role'], 'content': item['content'][:2000]} for item in previous
+                       if item['status']=='complete' and (item['role']=='user' or
+                       all(s['id']==thread['context_id'] for s in item['sources']))][-10:]
         # Do not freeze the entire research workspace while Codex is thinking.
         workspace.lock.release()
         g.workspace_locked = False
@@ -313,7 +446,9 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             db().execute('UPDATE ai_threads SET updated_at=? WHERE id=?', (now(),identifier))
             db().commit()
             messages = chat_messages(identifier)
-        return jsonify(thread_id=identifier, messages=messages, error=error), 502 if error else 200
+        selected = get_entry(thread['context_id']) if thread['context_id'] else None
+        return jsonify(thread_id=identifier, messages=messages, error=error,
+                       paper_status=paper_source(selected)['message'] if selected and selected['kind']=='paper' else None), 502 if error else 200
 
     @app.post('/assistant/draft')
     def assistant_draft():
@@ -443,6 +578,10 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         tags = ", ".join(tag.strip() for tag in request.form.get("tags", "").replace("，", ",").split(",") if tag.strip())[:1000]
         fields = ["authors", "year", "url", "bibtex", "model", "dataset", "seed", "metric_name", "metric_value", "params", "code_version", "location", "data_version", "external_url"]
         meta = {field: request.form.get(field, "").strip() for field in fields}
+        if current:
+            for field in ['paper_source', 'paper_source_error']:
+                if field in current['meta']:
+                    meta[field] = current['meta'][field]
         for key in ["url", "external_url"]:
             if meta[key] and (urlsplit(meta[key]).scheme not in {"http", "https"} or not urlsplit(meta[key]).netloc):
                 raise ValueError("链接须为完整的 http:// 或 https:// 地址。")
@@ -577,7 +716,33 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         files = db().execute("SELECT * FROM attachments WHERE entry_id=? ORDER BY created_at", (identifier,)).fetchall()
         related = db().execute("SELECT * FROM entries WHERE project_id=? ORDER BY kind,updated_at DESC", (identifier,)).fetchall() if entry["kind"] == "project" else []
         parent = get_entry(entry["project_id"]) if entry["project_id"] else None
-        return render_template("detail.html", active=entry["kind"], entry=entry, attachments=files, related=related, parent=parent)
+        thread, threads = None, []
+        if entry['kind'] == 'paper':
+            threads = db().execute('SELECT * FROM ai_threads WHERE context_id=? ORDER BY updated_at DESC LIMIT 40', (identifier,)).fetchall()
+            requested = request.args.get('thread')
+            if requested:
+                thread = chat_thread(requested)
+                if thread['context_id'] != identifier:
+                    abort(404)
+            elif request.args.get('discussion') != 'new' and threads:
+                thread = dict(threads[0])
+        return render_template("detail.html", active=entry["kind"], entry=entry, attachments=files, related=related, parent=parent,
+                               context=entry, thread=thread, threads=threads, messages=chat_messages(thread['id']) if thread else [],
+                               bridge=bridge_status() if entry['kind']=='paper' else None,
+                               paper=paper_source(entry) if entry['kind']=='paper' else None)
+
+    @app.post('/entry/<identifier>/paper/read')
+    def paper_read(identifier):
+        entry = get_entry(identifier)
+        if entry['kind'] != 'paper':
+            abort(400)
+        try:
+            read_paper(entry, request.form.get('attachment_id'))
+            flash('论文正文已提取。不会改写笔记；同步 GitHub 后可在其他电脑使用。', 'success')
+        except (PaperError, OSError, SyncError) as error:
+            db().rollback()
+            flash(str(error) if isinstance(error, PaperError) else '正文保存失败，请检查磁盘和同步状态后重试。', 'error')
+        return redirect(url_for('detail', identifier=identifier) + '#paper-discussion')
 
     @app.post("/entry/<identifier>/archive")
     def archive(identifier):

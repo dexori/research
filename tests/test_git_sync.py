@@ -20,7 +20,7 @@ class GitSyncTest(unittest.TestCase):
         subprocess.run(["git", "init", "--bare", "-b", "main", str(self.remote)], check=True, capture_output=True)
         self.repo_a = self.root / "computer-a"
         self.repo_a.mkdir()
-        for file in ["app.py", "git_sync.py", "github_auth.py", "codex_bridge.py", "draft_import.py", "research_cli.py", "math_compat.py", ".gitignore", ".gitattributes", "requirements.txt", "README.md"]:
+        for file in ["app.py", "git_sync.py", "github_auth.py", "codex_bridge.py", "draft_import.py", "research_cli.py", "math_compat.py", "paper_reader.py", ".gitignore", ".gitattributes", "requirements.txt", "README.md"]:
             shutil.copyfile(ROOT / file, self.repo_a / file)
         self.a = create_app(self.repo_a / "data", testing=True, repo_dir=self.repo_a)
         self.client_a = self.setup_client(self.a)
@@ -104,6 +104,20 @@ class GitSyncTest(unittest.TestCase):
             file = db.execute("SELECT * FROM attachments WHERE entry_id=?", (paper,)).fetchone()
             self.assertEqual(db.execute("SELECT count(*) FROM entries").fetchone()[0], 3)
         self.assertEqual((self.b.config["DATA_DIR"] / "uploads" / file["storage_name"]).read_bytes(), payload)
+
+    def test_paper_text_cache_restores_on_new_computer_without_download(self):
+        from unittest.mock import patch
+        paper=self.create(self.client_a,title='已读取原文的文献',url='https://example.org/paper.pdf')
+        text='已提取的论文方法与证据。'*80
+        with patch.object(self.a.extensions['paper_reader'],'read',return_value={'text':text,'method':'隔离 PDF','pages':2,'pages_read':2,'truncated':False}):
+            self.post(self.client_a,f'/entry/{paper}/paper/read')
+        self.sync(self.a);self.clone_b()
+        with patch.object(self.b.extensions['paper_reader'],'read',side_effect=AssertionError('GET must not download')):
+            page=self.client_b.get(f'/entry/{paper}')
+        self.assertIn('已提取正文'.encode(),page.data)
+        self.assertIn(text[:40].encode(),page.data)
+        with self.connection(self.b) as c:
+            self.assertEqual(c.execute('SELECT content FROM entries WHERE id=?',(paper,)).fetchone()[0],'## 阅读\n\n原始想法')
 
     def test_independent_offline_changes_merge_on_both_computers(self):
         self.create(self.client_a)

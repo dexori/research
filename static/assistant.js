@@ -31,10 +31,12 @@ if (chat) {
         for (const source of item.sources) {
           if (!/^[a-f0-9]{32}$/.test(source.id)) continue;
           const link = document.createElement('a'); link.href = `/entry/${source.id}`;
-          link.textContent = `▤ ${source.title}`; link.target = '_blank'; link.rel = 'noopener';
+          link.textContent = `▤ ${source.title}` + (source.paper_chars !== undefined ? ` · 原文 ${source.paper_chars.toLocaleString()} 字符${source.paper_truncated ? '（截断）' : ''}` : ''); link.target = '_blank'; link.rel = 'noopener';
           sources.append(link);
           const option = document.createElement('option'); option.value=source.id;
-          option.textContent=`追加到：${source.title}`; targets.append(option);
+          option.textContent=`追加到：${source.title}`;
+          if (source.id === form.querySelector('[name=context_id]').value && draft.querySelector('[name=kind]').value === 'paper') option.selected=true;
+          targets.append(option);
         }
         article.append(sources,draft);
       }
@@ -80,6 +82,9 @@ if (chat) {
       const payload=await decode(response);
       if (payload.thread_id) setThread(payload.thread_id);
       if (payload.messages) { showMessages(payload.messages); input.value=''; }
+      if (payload.paper_status) {
+        document.querySelectorAll('[data-paper-read-status],[data-paper-source-status]').forEach(node=>node.textContent=payload.paper_status);
+      }
       if (payload.error) status.textContent=payload.error;
       if (!response.ok && !payload.messages) throw new Error(payload.error || '发送失败，请稍后重试。');
     } catch(error) { status.textContent=error.message; }
@@ -91,3 +96,18 @@ if (chat) {
   document.querySelectorAll('[data-chat-prompt]').forEach(item => item.addEventListener('click',() => {input.value=item.dataset.chatPrompt;input.focus();}));
   if (container.querySelector('.pending')) timer=setTimeout(poll,1500);
 }
+
+document.querySelectorAll('[data-codex-check]').forEach(form=>form.addEventListener('submit', async event=>{
+  event.preventDefault();
+  const button=form.querySelector('button'), status=form.querySelector('[data-codex-status]');
+  button.disabled=true;status.textContent='正在检查本机 CLI 登录…';
+  try {
+    const response=await fetch(form.action,{method:'POST',body:new FormData(form)});
+    if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) throw new Error('检查未完成，请刷新并登录平台后重试。');
+    const data=await response.json();status.textContent=data.message + (data.profile ? ` 配置目录：${data.profile}` : '');
+  } catch(error) {status.textContent=error.message;}
+  finally {button.disabled=false;}
+}));
+document.querySelectorAll('[data-paper-fetch]').forEach(form=>form.addEventListener('submit',()=>{
+  const button=form.querySelector('button');button.disabled=true;button.textContent='正在读取，请稍候…';
+}));

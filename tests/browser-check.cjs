@@ -141,6 +141,14 @@ const {execFileSync} = require('node:child_process');
       await page.setViewportSize({width:1440,height:1080});
       await page.goto(paperUrl);
       await page.getByRole('link',{name:'与 Codex 讨论',exact:true}).click();
+      assert.equal(new URL(page.url()).pathname,new URL(paperUrl).pathname);
+      assert.match(await page.locator('.paper-chat-context').textContent(),/仅本篇文献/);
+      await page.locator('.codex-setup summary').click();
+      await page.getByRole('button',{name:'检查本机登录状态',exact:true}).click();
+      await page.locator('[data-codex-status]').filter({hasText:'隔离测试'}).waitFor();
+      await page.getByRole('button',{name:'读取论文链接',exact:true}).click();
+      await page.waitForURL('**/entry/**#paper-discussion');
+      await page.locator('[data-paper-source-status]').filter({hasText:'已提取正文'}).waitFor();
       assert.equal(await page.locator('#chat-project').inputValue(),projectId);
       await page.locator('#chat-message').fill('根据这条笔记帮我设计对照实验');
       await page.getByRole('button',{name:'发送给 Codex',exact:true}).click();
@@ -150,7 +158,8 @@ const {execFileSync} = require('node:child_process');
       assert.match(page.url(), /thread=/);
       assert.equal(await page.locator('.chat-message').count(),2);
       assert.ok(await page.locator('.chat-sources a').count() >= 1);
-      assert.equal(await page.locator('#chat-project').isDisabled(),true);
+      assert.equal(await page.locator('.chat-sources a').count(),1);
+      assert.match(await page.locator('.chat-sources a').textContent(),/原文/);
       const threadUrl = page.url();
       await page.locator('#chat-message').fill('继续细化研究假设');
       await page.locator('#chat-message').press('Control+Enter');
@@ -162,6 +171,8 @@ const {execFileSync} = require('node:child_process');
       await page.setViewportSize({width:390,height:844});
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth>window.innerWidth),false);
       await page.screenshot({path:path.join(output,'research-assistant-mobile.png'),fullPage:true});
+      await page.locator('.chat-draft-form').last().locator('[name=kind]').selectOption('idea');
+      await page.locator('.chat-draft-form').last().locator('[name=target_id]').selectOption('');
       await page.locator('.chat-draft-form').last().locator('button').click();
       assert.match(await page.locator('#content').inputValue(), /待验证的假设/);
       assert.equal(await page.locator('form.editor-form').getAttribute('action'),'/new/idea');
@@ -260,7 +271,7 @@ w=\begin{cases}
     }
     assert.deepEqual(errors,[]);
     assert.deepEqual(externalRequests,[],'Math must not request a CDN or external service.');
-    console.log('Browser checks passed: owner login, records, attachments, exports, GitHub settings/login (mocked), 14 mobile routes, navigation, no console errors.' + (process.env.TEST_ASSISTANT==='1' ? ' Assistant: context, multi-turn, local formulas after AJAX/reload, review/save (fake CLI).' : '') + (process.env.TEST_DATA_DIR ? ' Terminal CLI → inbox → preview → type/project → save, replay protection, upload, mobile formulas, invalid TeX fallback, no math in code, no trusted links.' : '') + ' No external requests or GitHub operations.');
+    console.log('Browser checks passed: owner login, records, attachments, exports, GitHub settings/login (mocked), 14 mobile routes, navigation, no console errors.' + (process.env.TEST_ASSISTANT==='1' ? ' Assistant: inline paper-only discussion, PDF reading/status (fake reader), Codex login check (fake CLI), multi-turn/reload, review/save and local formulas.' : '') + (process.env.TEST_DATA_DIR ? ' Terminal CLI → inbox → preview → type/project → save, replay protection, upload, mobile formulas, invalid TeX fallback, no math in code, no trusted links.' : '') + ' No external requests or GitHub operations.');
   } finally {
     await browser.close();
   }

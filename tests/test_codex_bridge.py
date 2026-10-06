@@ -93,6 +93,20 @@ class CodexBridgeTest(unittest.TestCase):
         finally:
             self.bridge.gate.release()
 
+    def test_login_check_uses_selected_profile_and_never_exposes_output(self):
+        profile=Path(self.temp.name)/'chosen-profile'
+        with patch('codex_bridge.shutil.which',return_value='/usr/bin/true'), patch.object(self.bridge,'profile',return_value=profile), patch('codex_bridge.subprocess.run') as run:
+            run.return_value=subprocess.CompletedProcess([],0,'SECRET_TOKEN','SECRET_TOKEN')
+            result=self.bridge.login_status()
+            self.assertEqual(result['status'],'signed_in')
+            self.assertNotIn('SECRET',json.dumps(result))
+            self.assertEqual(run.call_args.args[0],['/usr/bin/true','login','status'])
+            self.assertEqual(run.call_args.kwargs['env']['CODEX_HOME'],str(profile))
+            run.return_value=subprocess.CompletedProcess([],1,'SECRET','SECRET')
+            self.assertEqual(self.bridge.login_status()['status'],'signed_out')
+        with patch('codex_bridge.shutil.which',return_value=None):
+            self.assertEqual(self.bridge.login_status()['status'],'missing')
+
 
 if __name__ == '__main__':
     unittest.main()

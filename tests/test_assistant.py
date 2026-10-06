@@ -3,6 +3,9 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
+import json
+from paper_reader import PaperError
 
 from app import create_app
 from codex_bridge import BridgeError, retrieve_notes
@@ -163,6 +166,67 @@ class AssistantTest(unittest.TestCase):
             self.assertLessEqual(sum(len(item['content']) for item in sources),42000)
             self.assertNotIn(archived,{item['id'] for item in sources})
             self.assertEqual(retrieve_notes(connection,'xyz_unrelated_token'),[])
+
+    def test_paper_scoped_auto_read_cache_persistence_and_original_content(self):
+        identifier=self.make(url='https://arxiv.org/abs/2501.09747')
+        self.make(title='其他 DTW 文献',content='不得混入这段内容')
+        reader=self.app.extensions['paper_reader']
+        def extract(**kwargs):
+            self.assertFalse(self.app.extensions['git_workspace'].lock._is_owned())
+            return {'text':'论文原文方法与证据。'*9000,'pages':19,'pages_read':19,'method':'隔离 PDF 测试','truncated':False}
+        with patch.object(reader,'read',side_effect=extract) as read:
+            payload=self.post('/assistant/send',message='整理文献 DTW',context_id=identifier).json
+            self.post('/assistant/send',message='继续讨论',thread_id=payload['thread_id'])
+            self.assertEqual(read.call_count,1)
+        sources=self.bridge.calls[-1][2]
+        self.assertEqual([s['id'] for s in sources],[identifier])
+        self.assertEqual(len(sources[0]['paper_text']),65000)
+        self.assertTrue(sources[0]['paper_reading']['context_truncated'])
+        self.assertEqual(payload['messages'][-1]['sources'][0]['paper_chars'],65000)
+        page=self.client.get('/entry/'+identifier).data
+        self.assertIn('本篇文献讨论'.encode(),page)
+        self.assertIn('已提取正文'.encode(),page)
+        with self.connection() as c:
+            row=c.execute('SELECT * FROM entries WHERE id=?',(identifier,)).fetchone()
+            self.assertEqual(row['content'],'DTW 比较未来动作轨迹。')
+            self.assertEqual(c.execute('SELECT count(*) FROM attachments WHERE entry_id=?',(identifier,)).fetchone()[0],1)
+            cached=json.loads(row['metadata'])['paper_source']
+        canonical=Path(self.temp.name)/'checkout/workspace/attachments'/cached/'attachment.json'
+        self.assertTrue(canonical.exists())
+        # Editing notes preserves the cache; a changed URL does not reuse old text.
+        self.post('/entry/'+identifier+'/edit',title=row['title'],content=row['content'],status=row['status'],
+                  version=row['version'],url='https://example.org/new-paper.pdf')
+        self.assertIn('尚未读取'.encode(),self.client.get('/entry/'+identifier).data)
+
+    def test_paper_read_failures_explicit_no_fake_full_text_and_retry(self):
+        identifier=self.make(url='https://example.org/abstract')
+        with patch.object(self.app.extensions['paper_reader'],'read',side_effect=PaperError('只有摘要，未读取正文')) as read:
+            payload=self.post('/assistant/send',message='论文方法',context_id=identifier).json
+            self.post('/assistant/send',message='继续',thread_id=payload['thread_id'])
+            self.assertEqual(read.call_count,1)
+        source=self.bridge.calls[-1][2][0]
+        self.assertNotIn('paper_text',source)
+        self.assertEqual(source['paper_reading']['status'],'error')
+        self.assertIn('只有摘要'.encode(),self.client.get('/entry/'+identifier).data)
+        self.assertEqual(self.post('/entry/'+identifier+'/paper/read',attachment_id='unknown').status_code,302)
+        self.assertEqual(self.client.post('/entry/'+identifier+'/paper/read').status_code,400)
+        anonymous=self.app.test_client()
+        self.assertEqual(anonymous.post('/entry/'+identifier+'/paper/read').location,'/login')
+
+    def test_paper_discussion_thread_cannot_open_in_another_paper(self):
+        one=self.make(title='论文一'); two=self.make(title='论文二')
+        payload=self.post('/assistant/send',message='论文方法',context_id=one).json
+        self.assertEqual(self.client.get('/entry/'+two+'?thread='+payload['thread_id']).status_code,404)
+        page=self.client.get('/assistant?thread='+payload['thread_id']).data
+        self.assertIn('论文一'.encode(),page)
+        self.assertIn('仅本篇文献'.encode(),page)
+
+    def test_codex_check_auth_and_csrf_without_model_call(self):
+        self.bridge.login_status=lambda:{'status':'signed_in','message':'隔离测试：已登录'}
+        self.assertEqual(self.client.post('/assistant/connection/check').status_code,400)
+        self.assertEqual(self.post('/assistant/connection/check').json['status'],'signed_in')
+        self.assertEqual(self.bridge.calls,[])
+        self.assertEqual(self.app.test_client().post('/assistant/connection/check').location,'/login')
 
 
 if __name__ == '__main__':
