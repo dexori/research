@@ -20,7 +20,7 @@ class GitSyncTest(unittest.TestCase):
         subprocess.run(["git", "init", "--bare", "-b", "main", str(self.remote)], check=True, capture_output=True)
         self.repo_a = self.root / "computer-a"
         self.repo_a.mkdir()
-        for file in ["app.py", "git_sync.py", ".gitignore", ".gitattributes", "requirements.txt", "README.md"]:
+        for file in ["app.py", "git_sync.py", "github_auth.py", ".gitignore", ".gitattributes", "requirements.txt", "README.md"]:
             shutil.copyfile(ROOT / file, self.repo_a / file)
         self.a = create_app(self.repo_a / "data", testing=True, repo_dir=self.repo_a)
         self.client_a = self.setup_client(self.a)
@@ -66,6 +66,22 @@ class GitSyncTest(unittest.TestCase):
         self.b = create_app(self.repo_b / "data", testing=True, repo_dir=self.repo_b)
         self.client_b = self.setup_client(self.b)
         self.ws_b = self.b.extensions["git_workspace"]
+
+    def test_zip_download_can_initialize_and_merge_remote_history(self):
+        identifier = self.create(self.client_a)
+        self.sync(self.a)
+        repo = self.root / "computer-from-zip"
+        shutil.copytree(self.repo_a, repo, ignore=shutil.ignore_patterns(".git", "data", ".tools"))
+        app = create_app(repo / "data", testing=True, repo_dir=repo)
+        workspace = app.extensions["git_workspace"]
+        workspace.initialize()
+        workspace.git("remote", "add", "origin", str(self.remote))
+        client = self.setup_client(app)
+        self.assertEqual(client.get(f"/entry/{identifier}").status_code, 200)
+        self.sync(app)
+        self.assertEqual(workspace.conflicts(), [])
+        self.assertEqual(workspace.status()["ahead"], 0)
+        self.assertTrue((repo / "github_auth.py").exists())
 
     def test_new_computer_restores_projects_records_and_attachments_without_original(self):
         project = self.create(self.client_a, "project", title="研究项目")

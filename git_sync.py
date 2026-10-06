@@ -131,7 +131,7 @@ class GitWorkspace:
         if check and result.returncode:
             output = (result.stderr or result.stdout).strip()
             if "Permission denied" in output or "Authentication failed" in output or "could not read Username" in output:
-                raise SyncError("GitHub 登录尚未配置。请在这台电脑配置 Git 的 SSH 密钥或凭据管理器，再重试。")
+                raise SyncError("GitHub 登录尚未配置。请在此页面点击「登录 GitHub」授权，并使用 HTTPS 仓库地址；SSH 地址需要另行配置密钥。")
             raise SyncError("Git 操作未完成，本机资料已保留。" + ("\n" + output[:1500] if output else ""))
         return result
 
@@ -151,7 +151,7 @@ class GitWorkspace:
         if not self.has_repo():
             self.git("init", "-b", "main")
             # Only the app surface is selected; runtime data and secrets are excluded.
-            allowed = ["app.py", "git_sync.py", "requirements.txt", "README.md", ".gitignore", ".gitattributes",
+            allowed = ["app.py", "git_sync.py", "github_auth.py", "requirements.txt", "README.md", ".gitignore", ".gitattributes",
                        "templates", "static", "tests", "research-hub.service.example", "workspace"]
             files = [path for path in allowed if (self.repo / path).exists()]
             if files:

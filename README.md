@@ -18,14 +18,17 @@ python3 -m venv .venv
 ## 连接 GitHub，换电脑继续使用
 
 1. 在 GitHub 创建一个自己的**私有空仓库**，例如 `research-hub`，不要预填 README 或其他文件。
-2. 在当前电脑配置 Git 的 SSH 密钥或 HTTPS 凭据管理器，保证可以读写该仓库。平台不会要求你把令牌填入网页或仓库地址。
-3. 打开工作台的「GitHub 同步」，填写仓库地址及分支（通常为 `main`），保存设置。
+2. 打开「GitHub 同步」，点击「登录 GitHub」。首次使用会下载并校验官方 GitHub CLI（需要网络），已有安装会复用。
+   复制网页显示的一次性授权码，点击「前往 GitHub 授权」，在 GitHub 官网输入并确认；回来后会自动显示登录账号。超时可点击重新登录，不需要助手或手填令牌。
+3. 填写 HTTPS 仓库地址（例如 `https://github.com/你的用户名/research-hub.git`）及分支（通常为 `main`），保存设置。网页登录适用于 HTTPS；SSH 地址仍需要独立配置密钥。
 4. 点击「同步到 GitHub」，成功后代码、笔记和附件就在仓库中，可以关闭当前电脑。
 
-在另一台电脑上，先安装 Python 和 Git，配置自己的 GitHub 访问凭据，然后克隆同一仓库：
+新电脑的无终端授权流程：安装 Python 和 Git，在浏览器登录 GitHub，打开自己的私有仓库，选择 **Code → Download ZIP** 并解压。进入解压后的项目目录，运行下面的虚拟环境和启动命令（跳过 `git clone`）。打开网页设置本机访问密码，在「GitHub 同步」点击登录、确认授权，填写同一个 HTTPS 仓库地址并同步。下载包中的笔记会自动恢复；第一次同步会建立本地 Git 仓库并合并远端历史。
+
+如果已经配置了 Git 访问凭据，也可以克隆同一仓库：
 
 ```bash
-git clone git@github.com:你的用户名/research-hub.git
+git clone https://github.com/你的用户名/research-hub.git
 cd research-hub
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
@@ -37,7 +40,7 @@ python3 -m venv .venv
 Windows PowerShell 可使用：
 
 ```bash
-git clone git@github.com:你的用户名/research-hub.git
+git clone https://github.com/你的用户名/research-hub.git
 cd research-hub
 py -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
@@ -68,6 +71,7 @@ git pull --ff-only
 - 文件上传下载（每次请求最多 64 MB）；大数据和权重通过路径或链接管理。
 - Markdown 资料文件与附件持久化；本机 SQLite 提供检索和页面数据，拉取后自动恢复。
 - 网页 GitHub 同步：本机提交、拉取、合并和推送，显示待上传修改并支持冲突保留两份。
+- 网页 GitHub 登录：官方设备授权码、一键复制和授权入口、后台等待、登录状态更新及失败重试。工具保存在忽略的 `.tools/` 中，不提交仓库。
 - 编辑时检查本机记录版本，避免旧页面覆盖刚同步的新内容。
 - Markdown 导出、实验 CSV 导出、包含数据库和所有附件的完整 ZIP 备份。
 - 密码登录、CSRF 防护、Markdown HTML 清理、附件强制下载。
@@ -88,6 +92,8 @@ research-hub/
 `workspace/` 与应用代码一起进入 GitHub 私有仓库。每条记录都是独立 Markdown 文件，前面的 JSON 元信息保存标题、类型、项目关联、标签和附件信息，后面是可编辑的 Markdown 正文。请保留记录 ID 和元信息格式，直接删除文件不等同于归档；建议在网页归档资料。
 
 本机数据保存在 `data/research.sqlite3` 和 `data/uploads/`，`data/session.key` 是登录签名密钥。`data/` 被 Git 忽略；密码、登录密钥和运行中的 SQLite 不会上传。每台电脑使用自己的本机访问密码。可用 `RESEARCH_DATA_DIR=/绝对路径` 更换本机缓存位置。
+
+GitHub 凭据由官方 CLI 保存到本机系统凭据存储；系统没有可用的密钥环时，CLI 可能回退到自己的配置文件，请保护该电脑账号。网页只接收临时设备授权码和登录账号，不接收访问令牌。仅当前仓库设置 Git 凭据助手，不修改全局 Git 设置，不会同步凭据。浏览器的 GitHub 登录与平台的本机访问密码是两回事。
 
 附件在仓库中使用稳定 ID 和通用文件名，原始文件名保存在笔记元信息中，下载时恢复原名。记录使用 LF 换行，附件禁止 Git 换行转换，以支持 Linux、macOS 和 Windows 之间切换。
 

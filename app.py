@@ -18,11 +18,12 @@ from contextlib import closing
 from urllib.parse import urlsplit
 
 import bleach
-from flask import Flask, abort, flash, g, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, send_file, session, url_for
 import markdown
 from markupsafe import Markup
 from werkzeug.security import check_password_hash, generate_password_hash
 from git_sync import GitWorkspace, SyncError
+from github_auth import GitHubAuth
 
 ROOT = Path(__file__).resolve().parent
 KINDS = {
@@ -51,6 +52,8 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
     (directory / "uploads").mkdir(exist_ok=True, mode=0o700)
     workspace = GitWorkspace(repo_dir or (directory / "checkout" if testing else ROOT), directory)
     app.extensions["git_workspace"] = workspace
+    github = GitHubAuth(workspace, auto_check=not testing)
+    app.extensions["github_auth"] = github
     secret_path = directory / "session.key"
     try:
         fd = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -139,7 +142,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             except (SyncError, OSError) as error:
                 db().rollback()
                 workspace.error = str(error)
-            if request.method == "POST" and request.endpoint not in {"sync_configure", "sync_run", "sync_resolve"}:
+            if request.method == "POST" and request.endpoint not in {"sync_configure", "sync_run", "sync_resolve", "github_login"}:
                 if workspace.conflicts() or workspace.error:
                     abort(409, "同步资料需要检查。请先打开「GitHub 同步」处理冲突或附件缺失，再编辑记录。")
 
@@ -440,7 +443,15 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             state = workspace.status()
         except SyncError as error:
             state = {"error": str(error), "connected": False, "remote": "", "branch": "main", "record_count": 0, "conflicts": [], "dirty": 0, "ahead": 0, "behind": 0}
-        return render_template("sync.html", active="sync", state=state, last_sync=setting("last_git_sync"))
+        return render_template("sync.html", active="sync", state=state, last_sync=setting("last_git_sync"), github=app.extensions["github_auth"].snapshot())
+
+    @app.post("/sync/github/login")
+    def github_login():
+        return jsonify(app.extensions["github_auth"].start())
+
+    @app.get("/sync/github/status")
+    def github_status():
+        return jsonify(app.extensions["github_auth"].snapshot())
 
     @app.post("/sync/configure")
     def sync_configure():
