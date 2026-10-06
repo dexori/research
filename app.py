@@ -25,6 +25,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from git_sync import GitWorkspace, SyncError
 from github_auth import GitHubAuth
 from codex_bridge import CodexBridge, BridgeError, retrieve_notes
+from draft_import import MAX_BYTES as DRAFT_BYTES, SUFFIXES, decode_text, stage_draft, load_draft, list_drafts
 
 ROOT = Path(__file__).resolve().parent
 KINDS = {
@@ -118,6 +119,9 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_ai_messages_thread ON ai_messages(thread_id,created_at);
+            CREATE TABLE IF NOT EXISTS draft_imports (
+                draft_id TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES entries(id), imported_at TEXT NOT NULL
+            );
         """)
         db().commit()
         try:
@@ -166,7 +170,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "same-origin"
-        response.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+        response.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; script-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
         if request.endpoint != "static":
             response.headers["Cache-Control"] = "no-store"
         return response
@@ -192,9 +196,16 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         return db().execute("SELECT id,title FROM entries WHERE kind='project' ORDER BY title").fetchall()
 
     def render_md(text):
-        html = markdown.markdown(text, extensions=["fenced_code", "tables", "sane_lists"])
-        return Markup(bleach.clean(html, tags={"p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "a", "strong", "em", "del", "blockquote", "ul", "ol", "li", "code", "pre", "table", "thead", "tbody", "tr", "th", "td"},
-                                 attributes={"a": ["href", "title"], "code": ["class"]}, protocols=["http", "https", "mailto"], strip=True))
+        html = markdown.markdown(text, extensions=["fenced_code", "tables", "sane_lists", "pymdownx.arithmatex"],
+                                 extension_configs={"pymdownx.arithmatex":{"generic":True}})
+        def safe_attribute(tag, name, value):
+            if tag=='a':
+                return name in {'href','title'}
+            if tag=='code':
+                return name=='class'
+            return tag in {'span','div'} and name=='class' and value=='arithmatex'
+        return Markup(bleach.clean(html, tags={"p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "a", "strong", "em", "del", "blockquote", "ul", "ol", "li", "code", "pre", "table", "thead", "tbody", "tr", "th", "td", "span", "div"},
+                                 attributes=safe_attribute, protocols=["http", "https", "mailto"], strip=True))
 
     app.jinja_env.filters["markdown"] = render_md
     app.jinja_env.filters["day"] = lambda value: value[:10]
@@ -413,7 +424,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         rows = db().execute("SELECT * FROM entries WHERE title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\' ORDER BY updated_at DESC LIMIT 100", [needle] * 3).fetchall() if query else []
         return render_template("search.html", active="search", entries=rows, query=query)
 
-    def save_entry(kind, current=None):
+    def save_entry(kind, current=None, import_id=None):
         title = request.form.get("title", "").strip()
         content = request.form.get("content", "")
         if not title or len(title) > 240:
@@ -458,24 +469,91 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             workspace.write_entry(db(), identifier)
         except (OSError, SyncError) as error:
             raise ValueError("资料文件保存失败，请检查磁盘空间后重试。输入内容已保留。") from error
+        if import_id:
+            db().execute('INSERT INTO draft_imports VALUES (?,?,?)',(import_id,identifier,stamp))
         db().commit()
         return identifier
+
+    def imported_record(identifier):
+        row = db().execute('SELECT entry_id FROM draft_imports WHERE draft_id=?',(identifier,)).fetchone()
+        return row['entry_id'] if row else None
+
+    def checked_draft(identifier):
+        try:
+            return load_draft(directory,identifier)
+        except FileNotFoundError:
+            abort(404)
+        except ValueError as error:
+            abort(400,str(error))
+
+    @app.route('/imports',methods=['GET','POST'])
+    def imports_page():
+        if request.method=='POST':
+            try:
+                file = request.files.get('file')
+                pasted = request.form.get('content','')
+                if file and file.filename:
+                    if pasted.strip():
+                        raise ValueError('请选择上传文件或粘贴正文其中一种方式。')
+                    source_name = file.filename.replace('\\','/').split('/')[-1]
+                    if Path(source_name).suffix.lower() not in SUFFIXES:
+                        raise ValueError('只接受 .md、.markdown 或 .txt 草稿文件。')
+                    content = decode_text(file.stream.read(DRAFT_BYTES+1))
+                else:
+                    content = decode_text(pasted.encode('utf-8'))
+                    source_name = '粘贴的讨论草稿.md'
+                draft = stage_draft(directory,content,kind=request.form.get('kind','idea'),
+                                    title=request.form.get('title',''),project_id=request.form.get('project_id') or None,
+                                    tags=request.form.get('tags','终端导入'),source_name=source_name)
+                return redirect(url_for('import_review',identifier=draft['id']))
+            except ValueError as error:
+                flash(str(error),'error')
+        drafts = list_drafts(directory)
+        for draft in drafts:
+            draft['entry_id'] = imported_record(draft['id'])
+        return render_template('imports.html',active='imports',drafts=drafts,projects=projects(),values=request.form)
+
+    @app.get('/imports/<identifier>')
+    def import_review(identifier):
+        existing = imported_record(identifier)
+        if existing:
+            flash('这份草稿已导入，已打开原记录，不会重复创建。','success')
+            return redirect(url_for('detail',identifier=existing))
+        draft = checked_draft(identifier)
+        kind = request.args.get('kind',draft['kind'])
+        if kind not in KINDS:
+            abort(400,'请选择有效的记录类型。')
+        entry = {'title':draft['title'],'content':draft['content'],'status':'待开始',
+                 'project_id':draft['project_id'],'tags':draft['tags'],'meta':{}}
+        if draft['project_id'] and not db().execute("SELECT 1 FROM entries WHERE id=? AND kind='project'",(draft['project_id'],)).fetchone():
+            flash('草稿指定的项目在本机不存在，请重新选择关联项目。','error')
+            entry['project_id'] = None
+        return render_template('editor.html',active='imports',kind=kind,entry=entry,projects=projects(),
+                               editing=False,submit_url=url_for('new',kind=kind),import_draft=draft)
 
     @app.route("/new/<kind>", methods=["GET", "POST"])
     def new(kind):
         if kind not in KINDS:
             abort(404)
         entry = {"content": TEMPLATES[kind], "status": "待开始", "project_id": request.args.get("project", ""), "meta": {}}
+        draft = None
         if request.method == "POST":
+            import_id = request.form.get('import_id') or None
+            if import_id:
+                existing = imported_record(import_id)
+                if existing:
+                    flash('草稿已导入，不会重复创建。','success')
+                    return redirect(url_for('detail',identifier=existing))
+                draft = checked_draft(import_id)
             try:
-                identifier = save_entry(kind)
+                identifier = save_entry(kind,import_id=import_id)
                 flash("已保存到本机。换电脑前，请在「GitHub 同步」上传最新资料。", "success")
                 return redirect(url_for("detail", identifier=identifier))
             except ValueError as error:
                 db().rollback()
                 flash(str(error), "error")
                 entry = {**request.form, "meta": dict(request.form)}
-        return render_template("editor.html", active=kind, kind=kind, entry=entry, projects=projects(), editing=False)
+        return render_template("editor.html", active=kind, kind=kind, entry=entry, projects=projects(), editing=False,import_draft=draft)
 
     @app.route("/entry/<identifier>/edit", methods=["GET", "POST"])
     def edit(identifier):
@@ -652,7 +730,13 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
                         archive.write(directory / "uploads" / file["storage_name"], f"attachments/{file['storage_name']}")
                 finally:
                     g.db = original
-                archive.writestr("RESTORE.txt", "停止服务后，将 research.sqlite3 放入一个新的 data 目录；将 attachments 目录改名为 uploads。使用 RESEARCH_DATA_DIR 指向该目录启动。原密码仍有效。请勿把含私人资料的备份上传公开仓库。\n")
+                for path in (directory/'import-drafts').glob('*.json'):
+                    try:
+                        draft = load_draft(directory,path.stem)
+                    except (ValueError,OSError):
+                        continue
+                    archive.writestr('import-drafts/'+draft['id']+'.json',json.dumps(draft,ensure_ascii=False))
+                archive.writestr("RESTORE.txt", "停止服务后，将 research.sqlite3 放入一个新的 data 目录；将 attachments 目录改名为 uploads；如果存在 import-drafts 目录，也复制到该 data 目录。使用 RESEARCH_DATA_DIR 指向该目录启动。原密码仍有效。请勿把含私人资料的备份上传公开仓库。\n")
             snapshot.close()
             output.seek(0)
         return send_file(output, as_attachment=True, download_name=f"research-hub-{datetime.now():%Y%m%d-%H%M%S}.zip", mimetype="application/zip")

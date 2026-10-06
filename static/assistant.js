@@ -40,6 +40,7 @@ if (chat) {
       }
       container.append(article);
     }
+    window.renderResearchMath?.(container);
     container.scrollTop = container.scrollHeight;
     busy = messages.some(item => item.status === 'pending');
     button.disabled = busy;

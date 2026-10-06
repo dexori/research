@@ -17,10 +17,11 @@ class PreviewCodex:
         return {'available':True,'profile':'隔离测试终端','model':'浏览器测试模型','read_only':True}
 
     def answer(self, question, history, sources):
-        return '## 研究讨论草稿\n\n**待验证的假设**，不是已证实的实验结论。\n\n' + (
+        return '## 研究讨论草稿\n\n**待验证的假设**，不是已证实的实验结论。\n\n行内公式：$z_t = f_\\theta(o_t)$。\n\n$$\nL = \\sum_{i=1}^{n} d_i\n$$\n\n' + (
             f"参考 [{sources[0]['title']}](/entry/{sources[0]['id']})" if sources else '未检索到相关资料。')
 
 with tempfile.TemporaryDirectory(prefix="research-browser-") as directory:
+    print('Browser fixture data: '+directory,flush=True)
     app = create_app(directory, testing=True)
     if args.fake_codex:
         app.extensions['codex_bridge'] = PreviewCodex()

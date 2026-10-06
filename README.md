@@ -78,6 +78,44 @@ git pull --ff-only
 - Markdown 导出、实验 CSV 导出、包含数据库和所有附件的完整 ZIP 备份。
 - 密码登录、CSRF 防护、Markdown HTML 清理、附件强制下载。
 - 科研助手：网页调用已有 Codex CLI，检索相关笔记、多轮讨论、提供来源入口，回答经审核后保存为笔记。
+- 数学公式：笔记、导入预览和聊天回答支持 LaTeX 公式，本地 KaTeX 资源可离线显示。
+- 终端导入：Markdown 文件或粘贴正文先进入本机草稿箱，预览审核后创建新记录，重复保存不重复导入。
+
+## 公式与终端草稿导入
+
+公式支持行内 `$z_t = f_\theta(o_t)$`、`\(z_t = f_\theta(o_t)\)`，以及独立公式 `$$...$$`、`\[...\]`。公式块前后留空行，例如：
+
+```markdown
+## 表示学习假设
+
+行内公式：$z_t = f_\theta(o_t)$。
+
+$$
+L = -\log \frac{\exp(s^+/\tau)}{\sum_j \exp(s_j/\tau)}
+$$
+```
+
+代码块和行内代码中的公式保持原样；写美元符号可使用 `\$`。错误或不支持的 LaTeX 会保留原文，鼠标悬停显示提示，不影响整页。数学资源和字体随代码仓库携带，不从外部 CDN 加载；渲染禁用可信 HTML/链接命令、限制宏展开次数。为了公式排版，仅允许元素样式属性，脚本仍仅允许本机同源资源。
+
+在终端讨论结束后，让助手把**你选中的总结**保存为 UTF-8 Markdown 文件。然后从平台目录执行：
+
+```bash
+.venv/bin/python research_cli.py import "讨论草稿.md" --kind idea --open
+
+# 可选：指定标题和标签
+.venv/bin/python research_cli.py import "文献笔记.md" --kind paper --title "DTW 阅读笔记" --tags "DTW, VLA"
+
+# 查看项目 ID；导入时可添加 --project 完整项目ID
+.venv/bin/python research_cli.py projects
+```
+
+`--kind` 可以是 `idea`、`paper`、`experiment`、`writing`、`dataset`、`project`。不填标题时取第一个一级标题或文件名。命令只读取指定文件，不扫描 Codex 配置、凭据或其他聊天记录，不调用模型，不直接写 SQLite 或正式资料。默认只打印本机审核页链接；`--open` 才会打开浏览器。平台没有启动时也能暂存，之后启动并打开「终端导入」查看。
+
+网页中可上传 `.md`、`.markdown`、`.txt` 或粘贴总结；每份最多 2 MB，内容按原文导入，不解析执行其中的命令、脚本或 frontmatter。审核页可以切换类型、选择项目、编辑正文；**点击保存才创建一条新记录**。切换类型会重新载入原始草稿，已编辑内容请先保存。导入不覆盖已有记录；同一个草稿重复保存会打开已导入记录，不重复创建。
+
+Windows 使用 `.venv\Scripts\python.exe research_cli.py ...`。自定义端口可在子命令前加 `--port 8766`；自定义缓存须通过 `RESEARCH_DATA_DIR` 或 `--data-dir` 与运行中的平台保持一致。
+
+待审核草稿在 `data/import-drafts/`，不会进入 GitHub；保存后的正式记录按现有流程同步。完整 ZIP 备份包含草稿箱和导入状态，恢复时一并把 `import-drafts/` 复制到新数据目录。本次只增加草稿导入，不会把终端整段会话自动同步成网页聊天历史。
 
 ## 科研助手：沿用 codex2 终端
 
@@ -112,7 +150,7 @@ GitHub 凭据由官方 CLI 保存到本机系统凭据存储；系统没有可�
 
 附件在仓库中使用稳定 ID 和通用文件名，原始文件名保存在笔记元信息中，下载时恢复原名。记录使用 LF 换行，附件禁止 Git 换行转换，以支持 Linux、macOS 和 Windows 之间切换。
 
-完整备份包含 `research.sqlite3`、`records.json`、分类 Markdown 和 `attachments/`。恢复时先停止服务，准备一个**新的空数据目录**，复制备份中的 `research.sqlite3`，将 `attachments/` 改名为 `uploads/`，设置 `RESEARCH_DATA_DIR` 指向新目录后启动。原访问密码继续有效，新的会话密钥会自动生成。
+完整备份包含 `research.sqlite3`、`records.json`、分类 Markdown、`attachments/`，以及存在时的 `import-drafts/` 草稿箱。恢复时先停止服务，准备一个**新的空数据目录**，复制备份中的 `research.sqlite3`，将 `attachments/` 改名为 `uploads/`，并复制 `import-drafts/`（如果有），设置 `RESEARCH_DATA_DIR` 指向新目录后启动。原访问密码继续有效，新的会话密钥会自动生成。
 
 第一次启动新版本会将已有本机笔记和附件迁移到 `workspace/`，保留原本的数据。完整备份仍可用于额外存档；新电脑正常使用只需克隆或拉取 Git 仓库。不要让两个实例同时操作同一个 SQLite 文件。
 

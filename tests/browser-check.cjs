@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const {execFileSync} = require('node:child_process');
 
 (async () => {
   const output = path.join(__dirname, '..', 'artifacts');
@@ -13,6 +14,9 @@ const crypto = require('node:crypto');
   const context = await browser.newContext({ viewport: { width: 1440, height: 1080 }, acceptDownloads: true, reducedMotion:'reduce' });
   const page = await context.newPage();
   const errors = [];
+  const externalRequests = [];
+  page.on('request',request=>{if(!request.url().startsWith('http://127.0.0.1:8766/') && /^https?:/.test(request.url())) externalRequests.push(request.url());});
+  await context.route(/^https?:\/\/(?!127\.0\.0\.1:8766\/)/,route=>route.abort());
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => { if(message.type()==='error') errors.push(message.text()); });
   const base = 'http://127.0.0.1:8766';
@@ -118,7 +122,7 @@ const crypto = require('node:crypto');
     await page.locator('.github-new-computer summary').click();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth),false);
     await page.screenshot({path:path.join(output,'github-new-computer-mobile.png'),fullPage:true});
-    for (const route of ['/', '/library/paper','/library/experiment','/library/dataset','/library/idea','/library/writing','/new/paper','/new/experiment','/backup','/sync','/assistant', new URL(paperUrl).pathname,new URL(experimentUrl).pathname]) {
+    for (const route of ['/', '/library/paper','/library/experiment','/library/dataset','/library/idea','/library/writing','/new/paper','/new/experiment','/backup','/sync','/assistant','/imports', new URL(paperUrl).pathname,new URL(experimentUrl).pathname]) {
       await page.goto(base + route);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
       assert.equal(overflow,false,`Horizontal overflow: ${route}`);
@@ -141,6 +145,8 @@ const crypto = require('node:crypto');
       await page.locator('#chat-message').fill('根据这条笔记帮我设计对照实验');
       await page.getByRole('button',{name:'发送给 Codex',exact:true}).click();
       await page.locator('.chat-message.assistant.complete').waitFor();
+      await page.locator('.chat-message.assistant .katex').first().waitFor();
+      assert.equal(await page.locator('.chat-message.assistant .katex').count(),2);
       assert.match(page.url(), /thread=/);
       assert.equal(await page.locator('.chat-message').count(),2);
       assert.ok(await page.locator('.chat-sources a').count() >= 1);
@@ -151,6 +157,7 @@ const crypto = require('node:crypto');
       await page.waitForFunction(() => document.querySelectorAll('.chat-message').length===4);
       await page.reload();
       assert.equal(await page.locator('.chat-message').count(),4);
+      assert.equal(await page.locator('.chat-message.assistant .katex').count(),4);
       await page.screenshot({path:path.join(output,'research-assistant-desktop.png'),fullPage:true});
       await page.setViewportSize({width:390,height:844});
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth>window.innerWidth),false);
@@ -170,8 +177,74 @@ const crypto = require('node:crypto');
       await page.goto(paperUrl);
       assert.equal(await page.getByRole('heading',{name:'与 Codex 的讨论草稿（待审核）',exact:true}).count(),0);
     }
+    if (process.env.TEST_DATA_DIR) {
+      await page.setViewportSize({width:1440,height:1080});
+      const tick = String.fromCharCode(96);
+      const tex = String.raw`# 终端导入的表示学习讨论
+
+行内 $z_t=f_\theta(o_t)$ 和 \(d(z_i,z_j)\)。
+
+$$
+L=-\log\frac{\exp(s^+/\tau)}{\sum_j\exp(s_j/\tau)}
+$$
+
+\[x < y\]
+
+$$
+\begin{aligned}
+z_t &= f_\theta(o_t) \\
+a_t &= g_\phi(z_t)
+\end{aligned}
+$$
+
+坏公式 $\unsupportedmacro$ 应保留原文。
+
+链接命令 $\href{javascript:alert(1)}{禁止链接}$ 不得产生可点击链接。
+` + ['', '', '代码 '+tick+'$not_math$'+tick+'。', '', tick.repeat(3)+'text',
+       String.raw`\(literal_code\)`, tick.repeat(3)].join('\n');
+      const draftFile = path.join(process.env.TEST_DATA_DIR,'terminal draft.md');
+      fs.writeFileSync(draftFile,tex);
+      const result = execFileSync(path.join(__dirname,'../.venv/bin/python'),[
+        path.join(__dirname,'../research_cli.py'),'--data-dir',process.env.TEST_DATA_DIR,'--port','8766',
+        'import',draftFile,'--kind','paper','--project',projectId
+      ],{encoding:'utf8'});
+      const draftUrl = result.match(/http:\/\/127\.0\.0\.1:8766\/imports\/[a-f0-9]{32}/)[0];
+      await page.goto(`${base}/imports`);
+      assert.equal(await page.getByRole('link',{name:/终端导入的表示学习讨论/}).count(),1);
+      await page.goto(draftUrl);
+      await page.locator('.import-preview .katex').first().waitFor();
+      assert.ok(await page.locator('.import-preview .katex').count()>=5);
+      assert.equal(await page.locator('.import-preview .katex-display').count(),3);
+      assert.equal(await page.locator('.import-preview pre .katex,.import-preview code .katex').count(),0);
+      assert.match(await page.locator('.import-preview .math-fallback').textContent(),/unsupportedmacro/);
+      assert.equal(await page.locator('.import-preview .arithmatex a').count(),0);
+      assert.equal(await page.locator('#project_id').inputValue(),projectId);
+      await page.evaluate(()=>document.fonts.ready);
+      await page.screenshot({path:path.join(output,'terminal-import-formulas-desktop.png'),fullPage:true});
+      await page.setViewportSize({width:390,height:844});
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth),false);
+      await page.screenshot({path:path.join(output,'terminal-import-formulas-mobile.png'),fullPage:true});
+      await page.locator('#import-kind').selectOption('writing');
+      await page.getByRole('button',{name:'切换类型',exact:true}).click();
+      assert.equal(await page.locator('form.editor-form').getAttribute('action'),'/new/writing');
+      await page.locator('#title').fill('审核后的公式讨论');
+      await page.getByRole('button',{name:'保存草稿',exact:true}).click();
+      const savedUrl = page.url();
+      await page.getByRole('heading',{name:'审核后的公式讨论',exact:true}).waitFor();
+      assert.ok(await page.locator('.prose .katex').count()>=5);
+      await page.goto(draftUrl);
+      assert.equal(page.url(),savedUrl);
+      // Also exercise webpage upload; preview alone must not create a record.
+      await page.goto(`${base}/imports`);
+      await page.locator('#import-file').setInputFiles({name:'网页草稿.md',mimeType:'text/markdown',buffer:Buffer.from('# 网页上传待审核\n\n公式 $a=b$。')});
+      await page.getByRole('button',{name:'预览并审核草稿',exact:true}).click();
+      await page.locator('.import-preview .katex').waitFor();
+      await page.goto(`${base}/search?q=网页上传待审核`);
+      assert.equal(await page.locator('.search-results > a').count(),0);
+    }
     assert.deepEqual(errors,[]);
-    console.log('Browser checks passed: owner login, records, attachments, exports, GitHub settings/login (mocked), 13 mobile routes, navigation, no console errors.' + (process.env.TEST_ASSISTANT==='1' ? ' Assistant: context, multi-turn, sources, reload, desktop/mobile, review/save and unsaved append preservation (fake CLI, no model calls).' : '') + ' No external GitHub operations were performed.');
+    assert.deepEqual(externalRequests,[],'Math must not request a CDN or external service.');
+    console.log('Browser checks passed: owner login, records, attachments, exports, GitHub settings/login (mocked), 14 mobile routes, navigation, no console errors.' + (process.env.TEST_ASSISTANT==='1' ? ' Assistant: context, multi-turn, local formulas after AJAX/reload, review/save (fake CLI).' : '') + (process.env.TEST_DATA_DIR ? ' Terminal CLI → inbox → preview → type/project → save, replay protection, upload, mobile formulas, invalid TeX fallback, no math in code, no trusted links.' : '') + ' No external requests or GitHub operations.');
   } finally {
     await browser.close();
   }

@@ -6,6 +6,9 @@
   <title>{% block title %}{{ app_name }}{% endblock %}</title>
   <link rel="icon" href="{{ url_for('static',filename='favicon.svg') }}" type="image/svg+xml">
   <link rel="stylesheet" href="{{ url_for('static',filename='style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static',filename='vendor/katex/katex.min.css') }}">
+  <script defer src="{{ url_for('static',filename='vendor/katex/katex.min.js') }}"></script>
+  <script defer src="{{ url_for('static',filename='math.js') }}"></script>
   <script defer src="{{ url_for('static',filename='app.js') }}"></script>
 </head>
 <body>
@@ -22,13 +25,14 @@
       <a class="nav-link {{ 'selected' if active==key }}" href="{{ url_for('library',kind=key) }}"><span aria-hidden="true">{{ labels[2] }}</span>{{ labels[0] }}</a>
       {% endfor %}
       <div class="nav-label">资料管理</div>
+      <a class="nav-link {{ 'selected' if active=='imports' }}" href="{{ url_for('imports_page') }}"><span aria-hidden="true">↳</span>终端导入</a>
       <a class="nav-link {{ 'selected' if active=='sync' }}" href="{{ url_for('sync_page') }}"><span aria-hidden="true">⇅</span>GitHub 同步</a>
       <a class="nav-link {{ 'selected' if active=='backup' }}" href="{{ url_for('backup') }}"><span aria-hidden="true">⇣</span>导出与备份</a>
     </nav>
     <div class="sidebar-bottom"><span class="avatar">我</span><div>我的工作空间<small>私人 · 密码保护</small></div><form action="{{ url_for('logout') }}" method="post"><input type="hidden" name="csrf" value="{{ csrf() }}"><button class="logout" title="退出登录" aria-label="退出登录">退出</button></form></div>
   </aside>
   <div class="main-wrap">
-    <header class="topbar"><button class="menu-toggle" aria-label="展开导航" aria-expanded="false">☰</button><span class="top-context">Research Workspace <span class="context-divider">/</span> {{ kinds[active][0] if active in kinds else '科研助手' if active=='assistant' else 'GitHub 同步' if active=='sync' else '资料管理' if active=='backup' else '工作概览' }}</span><form class="global-search" action="{{ url_for('search') }}"><span aria-hidden="true">⌕</span><input name="q" type="search" aria-label="全局搜索" placeholder="搜索文献、实验、想法…" value="{{ query if active=='search' else '' }}"><kbd>/</kbd></form></header>
+    <header class="topbar"><button class="menu-toggle" aria-label="展开导航" aria-expanded="false">☰</button><span class="top-context">Research Workspace <span class="context-divider">/</span> {{ kinds[active][0] if active in kinds else '科研助手' if active=='assistant' else '终端导入' if active=='imports' else 'GitHub 同步' if active=='sync' else '资料管理' if active=='backup' else '工作概览' }}</span><form class="global-search" action="{{ url_for('search') }}"><span aria-hidden="true">⌕</span><input name="q" type="search" aria-label="全局搜索" placeholder="搜索文献、实验、想法…" value="{{ query if active=='search' else '' }}"><kbd>/</kbd></form></header>
     <main id="main-content">
 {% else %}<main class="auth-page">{% endif %}
   {% for category,message in get_flashed_messages(with_categories=true) %}<div class="notice {{ category }}" role="status">{{ message }}</div>{% endfor %}
