@@ -135,6 +135,10 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
                 status TEXT NOT NULL, draft_id TEXT, error TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS learning_progress (
+                job_id TEXT PRIMARY KEY REFERENCES learning_jobs(id) ON DELETE CASCADE,
+                state TEXT NOT NULL DEFAULT '{}'
+            );
         """)
         db().commit()
         try:
@@ -218,10 +222,17 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
 
     def learning_worker(identifier, topic, project_id, mode):
         """Network work runs outside the workspace lock; only stage an unsaved draft."""
+        def report(event):
+            with app.app_context():
+                row = db().execute("SELECT status FROM learning_jobs WHERE id=?", (identifier,)).fetchone()
+                if not row or row['status']!='pending':
+                    return
+                save_learning_progress(identifier, event)
         try:
             bridge = app.extensions['codex_bridge']
-            result = (app.extensions['learning_researcher'].research(topic, bridge) if mode=='public'
-                      else bridge.research_topic(topic))
+            result = (app.extensions['learning_researcher'].research(topic, bridge, on_progress=report) if mode=='public'
+                      else bridge.research_topic(topic, on_progress=report))
+            report({'stage':'validating','detail':'正在检查检索记录与引用来源；草稿尚未保存。','output':result.get('content','')})
             card = prepare_card(topic, result)
             with app.app_context(), workspace.lock:
                 job = db().execute('SELECT status FROM learning_jobs WHERE id=?', (identifier,)).fetchone()
@@ -232,6 +243,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
                                     source_name='联网学习整理（AI 草稿）', metadata=card['metadata'])
                 db().execute("UPDATE learning_jobs SET status='ready',draft_id=?,updated_at=? WHERE id=? AND status='pending'",
                              (draft['id'], now(), identifier))
+                save_learning_progress(identifier, {'stage':'ready','detail':'草稿已生成，请审核后保存。','output':card['content']})
                 db().commit()
         except Exception as error:
             # Do not expose raw CLI output, credentials, or unexpected exception details.
@@ -239,7 +251,43 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             with app.app_context():
                 db().execute("UPDATE learning_jobs SET status='error',error=?,updated_at=? WHERE id=? AND status='pending'",
                              (message, now(), identifier))
+                save_learning_progress(identifier, {'stage':'error','detail':message})
                 db().commit()
+
+    def save_learning_progress(identifier, event):
+        """Persist bounded public progress, not internal reasoning or tool transcripts."""
+        row = db().execute('SELECT state FROM learning_progress WHERE job_id=?', (identifier,)).fetchone()
+        state = json.loads(row['state']) if row else {}
+        stages = {'queued','planning','searching','reading','generating','validating','ready','error'}
+        stage = event.get('stage')
+        if stage not in stages:
+            return
+        stamp = now()
+        detail = str(event.get('detail',''))[:1200]
+        events = state.get('events', [])
+        if not events or (events[-1]['stage'],events[-1]['detail'])!=(stage,detail):
+            events.append({'stage':stage,'detail':detail,'at':stamp})
+        state.update(stage=stage, detail=detail, events=events[-60:], updated_at=stamp)
+        if isinstance(event.get('output'),str):
+            state['output'] = event['output'][:60000]
+        if isinstance(event.get('sources'),list):
+            sources = []
+            for source in event['sources'][:6]:
+                if not isinstance(source,dict):
+                    continue
+                url = str(source.get('url',''))[:2000]
+                try:
+                    parsed = urlsplit(url)
+                    safe = parsed.scheme=='https' and parsed.hostname and not parsed.username and not parsed.password
+                except ValueError:
+                    safe = False
+                if safe:
+                    sources.append({'title':str(source.get('title',''))[:500], 'url':url,
+                                    'scope':str(source.get('scope',''))[:300]})
+            state['sources'] = sources
+        db().execute('INSERT INTO learning_progress VALUES (?,?) ON CONFLICT(job_id) DO UPDATE SET state=excluded.state',
+                     (identifier,json.dumps(state,ensure_ascii=False)))
+        db().commit()
 
     def expire_learning_jobs():
         cutoff = datetime.fromtimestamp(time.time()-540, timezone.utc).isoformat(timespec='microseconds')
@@ -251,7 +299,9 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
     def learning_page():
         expire_learning_jobs()
         jobs = db().execute('SELECT * FROM learning_jobs ORDER BY created_at DESC LIMIT 20').fetchall()
-        return render_template('learning.html', active='learning', bridge=bridge_status(), projects=projects(), jobs=jobs)
+        selected = next((job for job in jobs if job['id']==request.args.get('job')), jobs[0] if jobs else None)
+        return render_template('learning.html', active='learning', bridge=bridge_status(), projects=projects(), jobs=jobs,
+                               selected_job_url=url_for('learning_job',identifier=selected['id']) if selected else '')
 
     @app.post('/learning/start')
     def learning_start():
@@ -275,6 +325,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         identifier, stamp = uuid.uuid4().hex, now()
         db().execute('INSERT INTO learning_jobs VALUES (?,?,?,?,?,?,?,?)',
                      (identifier, topic, project_id, 'pending', None, '', stamp, stamp))
+        save_learning_progress(identifier, {'stage':'queued','detail':'主题已提交，准备检索资料。'})
         db().commit()
         try:
             threading.Thread(target=learning_worker, args=(identifier, topic, project_id, mode), daemon=True).start()
@@ -290,7 +341,21 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         row = db().execute('SELECT * FROM learning_jobs WHERE id=?', (identifier,)).fetchone()
         if not row:
             abort(404)
+        saved = db().execute('SELECT state FROM learning_progress WHERE job_id=?', (identifier,)).fetchone()
+        progress = json.loads(saved['state']) if saved else {'stage':'queued','detail':'此任务尚无过程记录。','events':[]}
+        if row['status']=='error':
+            progress.update(stage='error',detail=row['error'])
+        elif row['status']=='ready':
+            progress.update(stage='ready',detail='草稿已生成，请审核后保存。')
+        output = progress.pop('output','')
+        progress['output_html'] = str(render_md(output)) if output else ''
+        end = row['updated_at'] if row['status']!='pending' else now()
+        try:
+            elapsed = max(0,int((datetime.fromisoformat(end)-datetime.fromisoformat(row['created_at'])).total_seconds()))
+        except (ValueError, TypeError):
+            elapsed = 0
         return jsonify(status=row['status'], topic=row['topic'], error=row['error'],
+                       progress=progress, elapsed_seconds=elapsed,
                        review_url=url_for('import_review', identifier=row['draft_id']) if row['status']=='ready' else None)
 
     def paper_source(entry):

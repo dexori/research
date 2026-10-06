@@ -30,7 +30,7 @@ class LearningTest(unittest.TestCase):
         self.bridge.research_topic.return_value = {'content': CARD, 'search_count':2}
         self.app.extensions['codex_bridge'] = self.bridge
         researcher = Mock()
-        researcher.research.side_effect=lambda topic, bridge: bridge.research_topic(topic)
+        researcher.research.side_effect=lambda topic, bridge, on_progress=None: bridge.research_topic(topic)
         self.app.extensions['learning_researcher'] = researcher
 
     def tearDown(self):
@@ -150,6 +150,42 @@ class LearningTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 prepare_card('ACT',result)
 
+    def test_public_progress_persists_on_reload_and_preview_is_sanitized(self):
+        release = threading.Event()
+        def research(topic, bridge, on_progress=None):
+            on_progress({'stage':'searching','detail':'已找到论文','sources':[
+                {'title':'ACT','url':'https://arxiv.org/abs/2304.13705','scope':'待读取'},
+                {'title':'unsafe','url':'javascript:alert(1)'},
+                {'title':'secret','url':'https://token@example.org'}]})
+            on_progress({'stage':'generating','detail':'生成中','output':'<script>alert(1)</script>\n\n$z=f(o)$'})
+            release.wait(5)
+            return {'content':CARD,'search_count':2}
+        self.app.extensions['learning_researcher'].research.side_effect=research
+        response=self.post('/learning/start',topic='ACT')
+        try:
+            deadline=time.monotonic()+2
+            while time.monotonic()<deadline:
+                result=self.client.get(response.json['job_url']).json
+                if result['progress']['stage']=='generating':
+                    break
+                time.sleep(.01)
+            self.assertEqual(result['status'],'pending')
+            self.assertEqual(result['progress']['stage'],'generating')
+            self.assertEqual(len(result['progress']['sources']),1)
+            self.assertNotIn('<script',result['progress']['output_html'])
+            self.assertIn('arithmatex',result['progress']['output_html'])
+            self.assertIsInstance(result['elapsed_seconds'],int)
+            page=self.client.get('/learning?job='+response.json['job_url'].split('/')[-1])
+            self.assertIn(response.json['job_url'].encode(),page.data)
+            with self.connection() as connection:
+                self.assertEqual(connection.execute('SELECT count(*) FROM entries').fetchone()[0],0)
+        finally:
+            release.set()
+            final=self.wait_job(response.json['job_url'])
+        self.assertEqual(final['progress']['stage'],'ready')
+        self.assertEqual([e['stage'] for e in final['progress']['events']],
+                         ['queued','searching','generating','validating','ready'])
+
     def test_research_command_is_invocation_only_and_requires_events(self):
         bridge = CodexBridge(self.directory)
         with patch('codex_bridge.shutil.which',return_value='/usr/bin/true'), patch.object(bridge,'config',return_value={'mcp_servers':{'test':{}}}):
@@ -213,6 +249,22 @@ class LearningTest(unittest.TestCase):
             with self.assertRaisesRegex(BridgeError,'正文读取失败'):
                 search.research('ACT',bridge)
             bridge.answer.assert_not_called()
+
+    def test_pipeline_reports_actual_sources_and_reading_stages(self):
+        search=PublicLearningSearch()
+        bridge=Mock()
+        bridge.answer.return_value='# ACT\n\n[论文](https://arxiv.org/abs/2304.13705)'
+        observed=[]
+        with patch.object(search,'search',return_value=[{'url':'https://arxiv.org/abs/2304.13705','title':'ACT','summary':'abstract'}]), patch('learning.PaperReader') as reader:
+            reader.return_value.read.return_value={'text':'full paper '*5000,'method':'PDF 提取','pages':10,'pages_read':10,'truncated':False}
+            result=search.research('ACT',bridge,on_progress=lambda event:observed.append(json.loads(json.dumps(event))))
+        self.assertEqual([event['stage'] for event in observed],
+                         ['planning','searching','searching','reading','reading','generating'])
+        self.assertEqual(observed[2]['sources'][0]['scope'],'待读取')
+        self.assertIn('有截断',observed[-1]['sources'][0]['scope'])
+        self.assertIn('40,000',observed[-1]['sources'][0]['scope'])
+        self.assertEqual(observed[-1]['sources'][0]['url'],result['source_urls'][0])
+        self.assertIn('on_progress',bridge.answer.call_args.kwargs)
 
     def test_unknown_topic_query_and_sourced_command_are_restricted(self):
         search=PublicLearningSearch()

@@ -2,6 +2,7 @@
 {% block title %}学习整理 · 研序{% endblock %}
 {% block content %}
 <div class="page-heading"><div><div class="eyebrow">LEARN · UNDERSTAND · REUSE</div><h1>输入主题，整理知识</h1><p class="muted">从原始论文与官方资料出发，把零散学习变成可复用的知识卡。</p></div><a class="button secondary" href="{{ url_for('library',kind='knowledge') }}">打开学习知识库</a></div>
+<div class="learning-workbench">
 <section class="panel learning-panel">
   <h2>今天想学什么？</h2>
   <p class="small muted">使用本机 {{ bridge.profile }} · {{ bridge.model }}。仅本功能允许联网检索，不会发送其他私有笔记；会使用终端服务的额度。搜索能力取决于当前服务，登录成功并不代表可搜索。</p>
@@ -21,9 +22,26 @@
   </form>
   {% if not bridge.available %}<p class="notice error">本机尚未找到 Codex CLI。请在<a href="{{ url_for('assistant_page') }}">科研助手</a>查看连接说明。</p>{% endif %}
 </section>
+<section class="panel learning-progress" data-learning-progress data-job-url="{{ selected_job_url }}" aria-label="整理过程">
+  <div class="learning-progress-heading"><div><div class="eyebrow">LIVE PROGRESS</div><h2>整理过程</h2></div><span class="learning-clock" data-learning-clock>00:00</span></div>
+  <p class="small muted learning-progress-topic" data-learning-progress-topic></p>
+  <p class="learning-current" data-learning-current role="status" aria-live="polite">输入主题后，这里会显示实际检索与生成过程。</p>
+  <div class="learning-stages" aria-label="任务阶段">
+    <span data-stage="planning">确定主题</span><span data-stage="searching">查找资料</span><span data-stage="reading">读取正文</span><span data-stage="generating">生成知识卡</span><span data-stage="validating">检查来源</span>
+  </div>
+  <div data-learning-sources class="learning-sources"></div>
+  <h3>过程记录</h3><ol class="learning-events" data-learning-events><li class="muted">等待开始，不会模拟进度。</li></ol>
+  <details class="learning-output"><summary>公开输出预览 <span class="small muted">· 未审核</span></summary>
+    <p class="small muted">这里只显示助手公开回复，不显示内部思考。终端可能在完成时才返回正文；等待期间仍可查看真实阶段和用时。</p>
+    <div class="markdown" data-learning-output><p class="muted">尚未收到公开正文。</p></div>
+  </details>
+  <div data-learning-review></div>
+</section>
+</div>
 <section class="panel learning-panel"><h2>最近整理任务</h2><p class="small muted">关掉网页不会取消后台任务；电脑和平台需要保持运行。未保存的草稿与任务仅留在本机；审核保存后再同步 GitHub，才能在其他电脑取回。</p>
 <div data-learning-jobs>{% for job in jobs %}<div class="learning-job" {% if job.status=='pending' %}data-learning-job="{{ url_for('learning_job',identifier=job.id) }}"{% endif %}>
   <strong>{{ job.topic }}</strong><span class="small muted" data-job-status>{{ {'pending':'检索与整理中…','ready':'草稿已生成，待审核','error':'未完成'}[job.status] }}</span>
+  <a class="text-link" href="{{ url_for('learning_page',job=job.id) }}">查看过程</a>
   {% if job.status=='ready' %}<a class="text-link" href="{{ url_for('import_review',identifier=job.draft_id) }}">审核知识卡</a>{% elif job.status=='error' %}<p class="notice error">{{ job.error }}</p>{% endif %}
 </div>{% else %}<p class="muted" data-learning-empty>还没有整理任务，输入第一个主题即可开始。</p>{% endfor %}</div></section>
 {% endblock %}

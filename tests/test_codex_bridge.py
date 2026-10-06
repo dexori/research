@@ -1,5 +1,7 @@
 import json
 import subprocess
+import sys
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +17,45 @@ class CodexBridgeTest(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_streamed_public_events_arrive_before_completion(self):
+        script = """import sys,json,time
+sys.stdin.read()
+events=[{'type':'turn.started'},
+ {'type':'item.completed','item':{'type':'reasoning','text':'PRIVATE_REASONING'}},
+ {'type':'item.completed','item':{'type':'command_execution','text':'PRIVATE_COMMAND'}},
+ {'type':'item.completed','item':{'type':'agent_message','text':'公开正文'}}]
+for event in events:
+ print(json.dumps(event),flush=True)
+ time.sleep(.07)
+time.sleep(.2)
+"""
+        received=[]
+        start=time.monotonic()
+        with patch.object(self.bridge,'command',return_value=[sys.executable,'-u','-c',script]):
+            answer=self.bridge.answer('测试',[],[],timeout=3,on_progress=lambda event:received.append((time.monotonic(),event)))
+        end=time.monotonic()
+        self.assertEqual(answer,'公开正文')
+        self.assertEqual(len(received),2)
+        self.assertLess(received[0][0]-start,.4)
+        self.assertLess(received[-1][0],end-.1)
+        self.assertNotIn('PRIVATE',json.dumps(received))
+        self.assertFalse(self.bridge.gate.locked())
+
+    def test_stream_timeout_and_oversize_release_gate(self):
+        for script,timeout,expected in [
+            ('import time; time.sleep(30)',.15,'超时'),
+            ('import sys; sys.stdin.read(); print("x"*2200000)',3,'过长')]:
+            with patch.object(self.bridge,'command',return_value=[sys.executable,'-u','-c',script]):
+                with self.assertRaisesRegex(BridgeError,expected):
+                    self.bridge.answer('test',[],[],timeout=timeout,on_progress=lambda event:None)
+            self.assertFalse(self.bridge.gate.locked())
+
+    def test_reasoning_errors_and_tool_events_are_not_public_progress(self):
+        for event in [None,[],{'type':'error','message':'SECRET'},
+                      {'type':'item.completed','item':{'type':'reasoning','text':'SECRET'}},
+                      {'type':'item.completed','item':{'type':'mcp_tool_call','text':'SECRET'}}]:
+            self.assertIsNone(self.bridge.public_progress(json.dumps(event)))
 
     def test_fixed_read_only_command_disables_configured_tools(self):
         with patch('codex_bridge.shutil.which', return_value='/usr/bin/true'), patch.object(

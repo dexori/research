@@ -2,6 +2,7 @@
 import sys
 import argparse
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -13,7 +14,7 @@ parser.add_argument('--fake-codex', action='store_true', help='Isolated determin
 args = parser.parse_args()
 
 class PreviewCodex:
-    def research_topic(self, topic):
+    def research_topic(self, topic, on_progress=None):
         return {'content':'# ACT 学习卡\n\n分类：模型架构\n标签：ACT, CVAE, action chunking\n\n## 一句话理解\n\n隔离测试知识卡，不是实际检索结果。\n\n$$L = \\sum_i d_i$$\n\n[原论文](https://arxiv.org/abs/2304.13705)\n\n[作者项目](https://tonyzhaozh.github.io/aloha/)', 'search_count':2}
     def login_status(self):
         return {'status':'signed_in','message':'隔离测试：CLI 报告已登录；没有调用模型。'}
@@ -30,7 +31,13 @@ with tempfile.TemporaryDirectory(prefix="research-browser-") as directory:
     if args.fake_codex:
         app.extensions['codex_bridge'] = PreviewCodex()
         class PreviewLearning:
-            def research(self,topic,bridge):
+            def research(self,topic,bridge,on_progress=None):
+                if on_progress:
+                    sources=[{'title':'ACT 原论文（隔离测试）','url':'https://arxiv.org/abs/2304.13705','scope':'隔离测试正文'}]
+                    for stage,detail in [('planning','隔离测试：确定主题'),('searching','隔离测试：已找到原论文'),
+                                         ('reading','隔离测试：读取正文'),('generating','隔离测试：生成知识卡')]:
+                        on_progress({'stage':stage,'detail':detail,'sources':sources})
+                        time.sleep(1.5)
                 return bridge.research_topic(topic)
         app.extensions['learning_researcher'] = PreviewLearning()
         class PreviewPaper:

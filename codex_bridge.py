@@ -10,6 +10,8 @@ import signal
 import subprocess
 import tempfile
 import threading
+import queue
+import time
 
 try:
     import tomllib
@@ -189,7 +191,7 @@ class CodexBridge:
                     '--json', '--color', 'never', '--skip-git-repo-check', '-']
         return command
 
-    def answer(self, question, history, sources, timeout=180, *, research=False, sourced_learning=False):
+    def answer(self, question, history, sources, timeout=180, *, research=False, sourced_learning=False, on_progress=None):
         if not self.gate.acquire(blocking=False):
             raise BridgeError('Codex 正在回答另一条问题，请等它完成后再发送。')
         process = None
@@ -214,7 +216,10 @@ class CodexBridge:
                                            stderr=subprocess.DEVNULL, text=True, encoding='utf-8',
                                            errors='replace', start_new_session=os.name != 'nt')
                 try:
-                    output, _ = process.communicate(input=prompt, timeout=timeout)
+                    if on_progress:
+                        output = self.stream_output(process, prompt, timeout, on_progress)
+                    else:
+                        output, _ = process.communicate(input=prompt, timeout=timeout)
                 except subprocess.TimeoutExpired:
                     self.stop(process)
                     raise BridgeError('本次 Codex 回答超时。问题已保留，请稍后重试或缩小问题范围。') from None
@@ -257,11 +262,100 @@ class CodexBridge:
                 self.stop(process)
             self.gate.release()
 
-    def research_topic(self, topic, timeout=240):
-        return self.answer(topic, [], [], timeout=timeout, research=True)
+    def research_topic(self, topic, timeout=240, on_progress=None):
+        options = {'on_progress':on_progress} if on_progress else {}
+        return self.answer(topic, [], [], timeout=timeout, research=True, **options)
 
     @staticmethod
-    def stop(process):
+    def public_progress(line):
+        """Allowlisted public events only; never forward reasoning or raw errors."""
+        try:
+            event = json.loads(line)
+        except ValueError:
+            return None
+        if not isinstance(event, dict):
+            return None
+        if event.get('type') == 'turn.started':
+            return {'stage':'generating','detail':'终端已开始回答，等待可公开的正文。'}
+        item = event.get('item', {})
+        if not isinstance(item, dict):
+            return None
+        if event.get('type') in {'item.updated','item.completed'} and item.get('type')=='agent_message' and isinstance(item.get('text'),str):
+            return {'stage':'generating','detail':'终端已返回公开输出（仍待校验）。','output':item['text'][:60000]}
+        if event.get('type') in {'item.started','item.completed'} and item.get('type')=='web_search':
+            completed = event['type']=='item.completed'
+            if item.get('status') in {'failed','error'}:
+                return {'stage':'searching','detail':'终端报告一次网页检索未完成，等待最终任务结果。'}
+            query = item.get('query','')
+            return {'stage':'searching','detail':('终端网页检索已返回' if completed else '终端正在检索公开网页')+
+                    ('：'+query[:400] if isinstance(query,str) and query else '。')}
+        return None
+
+    def stream_output(self, process, prompt, timeout, on_progress):
+        """Read bounded JSONL incrementally, keeping stdin/stdout and timeout independent."""
+        chunks, channel, stopping = [], queue.Queue(maxsize=32), threading.Event()
+        def put(item):
+            while not stopping.is_set():
+                try:
+                    channel.put(item, timeout=.1)
+                    return
+                except queue.Full:
+                    pass
+        def reader():
+            try:
+                while not stopping.is_set():
+                    line = process.stdout.readline(2*1024*1024+1)
+                    if not line:
+                        break
+                    put(line)
+            except (OSError, ValueError):
+                put(False)
+            finally:
+                put(None)
+        def writer():
+            try:
+                process.stdin.write(prompt)
+                process.stdin.close()
+            except (OSError, ValueError):
+                put(False)
+        readers = [threading.Thread(target=reader,daemon=True), threading.Thread(target=writer,daemon=True)]
+        deadline, total = time.monotonic()+timeout, 0
+        for thread in readers:
+            thread.start()
+        try:
+            while True:
+                remaining = deadline-time.monotonic()
+                if remaining<=0:
+                    raise subprocess.TimeoutExpired('codex', timeout)
+                try:
+                    line = channel.get(timeout=min(.1,remaining))
+                except queue.Empty:
+                    continue
+                if line is None:
+                    break
+                if line is False:
+                    raise BridgeError('终端输出读取中断，请检查本机服务后重试。')
+                total += len(line)
+                if total>2*1024*1024:
+                    raise BridgeError('Codex 返回内容过长，请缩小问题范围。')
+                chunks.append(line)
+                progress = self.public_progress(line)
+                if progress:
+                    on_progress(progress)
+            process.wait(timeout=max(.01,deadline-time.monotonic()))
+            return ''.join(chunks)
+        finally:
+            stopping.set()
+            if process.poll() is None:
+                self.stop(process, drain=False)
+            for thread in readers:
+                thread.join(timeout=1)
+            for stream in [process.stdin,process.stdout]:
+                if stream and not stream.closed:
+                    stream.close()
+
+    @staticmethod
+    def stop(process, drain=True):
         if process.poll() is not None:
             return
         try:
@@ -269,6 +363,9 @@ class CodexBridge:
                 os.killpg(process.pid, signal.SIGKILL)
             else:
                 process.kill()
-            process.communicate(timeout=5)
+            if drain:
+                process.communicate(timeout=5)
+            else:
+                process.wait(timeout=5)
         except (OSError, subprocess.TimeoutExpired):
             pass

@@ -76,13 +76,21 @@ class PublicLearningSearch:
             raise BridgeError('arXiv 未找到可读取的论文，请补充英文主题或改用 Codex 网页搜索。')
         return sources
 
-    def research(self, topic, bridge):
+    def research(self, topic, bridge, on_progress=None):
+        def report(stage, detail, **values):
+            if on_progress:
+                on_progress({'stage':stage,'detail':detail,**values})
         try:
+            report('planning','正在确定主题范围与英文检索词。')
             query = self.query(topic,bridge)
+            report('searching','正在查询 arXiv：'+query)
             candidates = self.search(query)
+            visible = [{'title':s['title'],'url':s['url'],'scope':'待读取'} for s in candidates[:2]]
+            report('searching',f'检索完成，准备读取 {len(visible)} 篇候选论文。',sources=visible)
             sources, budget = [], 65000
             reader = PaperReader()
-            for candidate in candidates[:2]:
+            for index, candidate in enumerate(candidates[:2]):
+                report('reading','正在读取：'+candidate['title'],sources=visible)
                 try:
                     result = reader.read(url=candidate['url'])
                     text = result['text'][:min(budget,40000)]
@@ -91,12 +99,21 @@ class PublicLearningSearch:
                     reading['context_truncated'] = len(text)<len(result['text'])
                     reading['sent_chars'] = len(text)
                     sources.append({**candidate,'content':text,'reading':reading})
+                    scope = reading['method']+f' · 向助手提供 {len(text):,} 字符'
+                    if reading.get('context_truncated') or reading.get('truncated'):
+                        scope += '（有截断）'
+                    visible[index]['scope'] = scope
+                    report('reading','正文提取完成：'+candidate['title'],sources=visible)
                 except PaperError:
                     # Explicitly identify metadata-only sources; never call an abstract full text.
                     sources.append({**candidate,'content':candidate['summary'],'reading':{'method':'arXiv 摘要，正文读取失败','abstract_only':True}})
+                    visible[index]['scope'] = '正文读取失败，仅提供摘要'
+                    report('reading','这篇正文读取失败，将明确标注摘要范围。',sources=visible)
             if not any(not source['reading'].get('abstract_only') for source in sources):
                 raise BridgeError('已检索到论文，但正文读取失败；未生成知识卡。请检查论文网络或改用 Codex 网页搜索。')
-            content = bridge.answer(topic, [], sources, timeout=240, sourced_learning=True)
+            report('generating','已提交公开论文资料，等待终端生成知识卡。',sources=visible)
+            options = {'on_progress':on_progress} if on_progress else {}
+            content = bridge.answer(topic, [], sources, timeout=240, sourced_learning=True, **options)
             receipt = '\n\n## 平台实际检索来源\n\n'
             for source in sources:
                 scope = source['reading']['method']
