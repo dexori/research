@@ -124,9 +124,19 @@ class GitHubAuth:
                                 capture_output=True, text=True, timeout=20)
         try:
             accounts = json.loads(result.stdout).get("hosts", {}).get("github.com", [])
-            return next((row["login"] for row in accounts if row.get("state") == "success" and row.get("active")), "")
-        except (ValueError, KeyError, TypeError):
+            for row in accounts:
+                if not row.get("active"):
+                    continue
+                if row.get("state") == "success":
+                    return row["login"]
+                reason = str(row.get("error", "")).lower()
+                if any(value in reason for value in ["401", "invalid token", "bad credentials"]):
+                    return ""
+                # Saved credentials with a transport error are not a logged-out account.
+                raise RuntimeError("暂时无法验证 GitHub 登录，请检查网络后重试。")
             return ""
+        except (ValueError, KeyError, TypeError):
+            raise RuntimeError("暂时无法验证 GitHub 登录，请检查网络后重试。") from None
 
     def connect_git(self, binary):
         # Repository-local helper only. Neither a token nor any global Git config is modified.

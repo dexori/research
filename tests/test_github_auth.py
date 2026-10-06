@@ -77,6 +77,19 @@ class GitHubAuthTest(unittest.TestCase):
         install.assert_not_called()
         self.assertEqual(self.auth.snapshot()["status"], "signed_out")
 
+    def test_network_failure_is_not_mistaken_for_logout_or_reauthorization(self):
+        transport_error = {"hosts": {"github.com": [{"active": True, "state": "error", "login": "researcher", "error": "connection reset by peer"}]}}
+        result = subprocess.CompletedProcess([], 0, stdout=json.dumps(transport_error), stderr="")
+        with patch.object(self.auth, "find_cli", return_value=Path("/example/gh")), \
+             patch("github_auth.subprocess.run", return_value=result), patch.object(self.auth, "device_login") as login:
+            self.auth._run(True)
+        login.assert_not_called()
+        self.assertEqual(self.auth.snapshot()["status"], "error")
+        transport_error["hosts"]["github.com"][0]["error"] = "HTTP 401: Bad credentials"
+        result.stdout = json.dumps(transport_error)
+        with patch("github_auth.subprocess.run", return_value=result):
+            self.assertEqual(self.auth.account(Path("/example/gh")), "")
+
     def test_background_start_is_nonblocking_and_duplicate_click_safe(self):
         entered, release = threading.Event(), threading.Event()
         def run(login):
