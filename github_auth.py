@@ -146,7 +146,7 @@ class GitHubAuth:
         environment = os.environ.copy()
         environment.update(GH_BROWSER="echo", GH_PAGER="cat", NO_COLOR="1")
         process = subprocess.Popen([str(binary), "auth", "login", "--hostname", "github.com",
-                                    "--git-protocol", "https", "--web"],
+                                    "--git-protocol", "https", "--web", "--clipboard=false"],
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                    text=True, encoding="utf-8", errors="replace", env=environment)
         reader = threading.Thread(target=self.consume_output, args=(process,), daemon=True)

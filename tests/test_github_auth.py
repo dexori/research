@@ -64,6 +64,7 @@ class GitHubAuthTest(unittest.TestCase):
             arguments = launch.call_args.args[0]
             self.assertIn("--web", arguments)
             self.assertIn("https", arguments)
+            self.assertIn("--clipboard=false", arguments)
             self.assertNotIn("--with-token", arguments)
             connect.assert_called_once_with(binary)
         state = self.auth.snapshot()
