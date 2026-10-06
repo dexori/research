@@ -47,11 +47,16 @@ def validate(draft):
     if not isinstance(content, str):
         raise ValueError('草稿正文无效。')
     decode_text(content.encode('utf-8'))
+    metadata=draft.get('metadata',{})
+    if (not isinstance(metadata,dict) or not all(isinstance(k,str) and isinstance(v,str) for k,v in metadata.items())
+            or set(metadata)-{'knowledge_category','learning_topic','search_date','search_count','search_method'}
+            or len(json.dumps(metadata))>4000):
+        raise ValueError('草稿学习元信息无效。')
     return draft
 
 
 def stage_draft(data_dir, content, *, kind='idea', title='', project_id=None,
-                tags='', source_name='终端讨论.md'):
+                tags='', source_name='终端讨论.md', metadata=None):
     content = decode_text(content.encode('utf-8'))
     # Only a display name is persisted, never an arbitrary server filesystem path.
     source_name = source_name.replace('\\','/').split('/')[-1][:240]
@@ -59,7 +64,7 @@ def stage_draft(data_dir, content, *, kind='idea', title='', project_id=None,
                       'title':title.strip() or inferred_title(content,source_name),
                       'project_id':None if kind=='project' else project_id,
                       'tags':tags, 'source_name':source_name,
-                      'content':content, 'created_at':datetime.now(timezone.utc).isoformat(timespec='microseconds')})
+                      'content':content, 'metadata':metadata or {}, 'created_at':datetime.now(timezone.utc).isoformat(timespec='microseconds')})
     cache = Path(data_dir)
     cache.mkdir(parents=True,exist_ok=True,mode=0o700)
     (cache/'import-drafts').mkdir(exist_ok=True,mode=0o700)

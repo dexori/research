@@ -11,6 +11,7 @@ from pathlib import Path
 import secrets
 import sqlite3
 import time
+import threading
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -28,11 +29,13 @@ from codex_bridge import CodexBridge, BridgeError, retrieve_notes
 from draft_import import MAX_BYTES as DRAFT_BYTES, SUFFIXES, decode_text, stage_draft, load_draft, list_drafts
 from math_compat import MathCompatExtension
 from paper_reader import PaperReader, PaperError
+from learning import CATEGORIES as KNOWLEDGE_CATEGORIES, prepare_card, PublicLearningSearch
 
 ROOT = Path(__file__).resolve().parent
 KINDS = {
     "project": ("研究项目", "项目", "◈"),
     "paper": ("文献笔记", "文献", "▤"),
+    "knowledge": ("学习知识库", "知识卡", "▧"),
     "experiment": ("实验记录", "实验", "⌁"),
     "dataset": ("数据与模型", "数据", "▦"),
     "idea": ("研究想法", "想法", "✧"),
@@ -42,6 +45,7 @@ STATUSES = ["待开始", "进行中", "已完成", "已归档"]
 TEMPLATES = {
     "project": "## 研究问题\n\n\n## 假设\n\n\n## 相关工作\n\n\n## 实验计划\n\n\n## 下一步\n\n- [ ] ",
     "paper": "## 一句话总结\n\n\n## 研究问题与动机\n\n\n## 方法\n\n\n## 主要结果\n\n\n## 局限\n\n\n## 对我的研究有什么启发\n\n",
+    "knowledge": "## 一句话理解\n\n\n## 前置知识\n\n\n## 核心原理与数据流\n\n\n## 训练与推理\n\n\n## 最小例子\n\n\n## 区别与联系\n\n\n## 常见误区\n\n\n## 自测问题\n\n\n## 待确认问题\n\n\n## 来源与阅读顺序\n\n",
     "experiment": "## 实验目的\n\n\n## 环境与运行命令\n\n```bash\n\n```\n\n## 观察与结果\n\n\n## 结论与下一步\n\n",
     "dataset": "## 来源与用途\n\n\n## 版本与划分\n\n\n## 使用方法\n\n\n## 注意事项\n\n",
     "idea": "## 问题\n\n\n## 为什么值得研究\n\n\n## 初步假设\n\n\n## 如何验证\n\n",
@@ -60,6 +64,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
     app.extensions["github_auth"] = github
     app.extensions["codex_bridge"] = CodexBridge(directory)
     app.extensions["paper_reader"] = PaperReader()
+    app.extensions["learning_researcher"] = PublicLearningSearch()
     secret_path = directory / "session.key"
     try:
         fd = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -125,6 +130,11 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             CREATE TABLE IF NOT EXISTS draft_imports (
                 draft_id TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES entries(id), imported_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS learning_jobs (
+                id TEXT PRIMARY KEY, topic TEXT NOT NULL, project_id TEXT REFERENCES entries(id) ON DELETE SET NULL,
+                status TEXT NOT NULL, draft_id TEXT, error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
         """)
         db().commit()
         try:
@@ -164,7 +174,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             except (SyncError, OSError) as error:
                 db().rollback()
                 workspace.error = str(error)
-            if request.method == "POST" and request.endpoint not in {"sync_configure", "sync_run", "sync_resolve", "github_login", "assistant_send", "codex_check"}:
+            if request.method == "POST" and request.endpoint not in {"sync_configure", "sync_run", "sync_resolve", "github_login", "assistant_send", "codex_check", "learning_start"}:
                 if workspace.conflicts() or workspace.error:
                     abort(409, "同步资料需要检查。请先打开「GitHub 同步」处理冲突或附件缺失，再编辑记录。")
 
@@ -181,7 +191,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
 
     @app.context_processor
     def context():
-        return {"kinds": KINDS, "statuses": STATUSES, "csrf": csrf,
+        return {"kinds": KINDS, "statuses": STATUSES, "csrf": csrf, "knowledge_categories": KNOWLEDGE_CATEGORIES,
                 "today": datetime.now().strftime("%Y年%m月%d日"), "app_name": "研序 Research Hub",
                 "workspace_error": workspace.error}
 
@@ -205,6 +215,83 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         except BridgeError as error:
             flash(str(error), 'error')
             return {'available': False, 'profile': 'Codex', 'model': '无法读取配置'}
+
+    def learning_worker(identifier, topic, project_id, mode):
+        """Network work runs outside the workspace lock; only stage an unsaved draft."""
+        try:
+            bridge = app.extensions['codex_bridge']
+            result = (app.extensions['learning_researcher'].research(topic, bridge) if mode=='public'
+                      else bridge.research_topic(topic))
+            card = prepare_card(topic, result)
+            with app.app_context(), workspace.lock:
+                job = db().execute('SELECT status FROM learning_jobs WHERE id=?', (identifier,)).fetchone()
+                if not job or job['status']!='pending':
+                    return
+                draft = stage_draft(directory, card['content'], kind='knowledge', title=topic,
+                                    project_id=project_id, tags=card['tags'],
+                                    source_name='联网学习整理（AI 草稿）', metadata=card['metadata'])
+                db().execute("UPDATE learning_jobs SET status='ready',draft_id=?,updated_at=? WHERE id=? AND status='pending'",
+                             (draft['id'], now(), identifier))
+                db().commit()
+        except Exception as error:
+            # Do not expose raw CLI output, credentials, or unexpected exception details.
+            message = str(error)[:1200] if isinstance(error, (BridgeError, ValueError)) else '整理未完成，请检查本机服务与磁盘后重试。'
+            with app.app_context():
+                db().execute("UPDATE learning_jobs SET status='error',error=?,updated_at=? WHERE id=? AND status='pending'",
+                             (message, now(), identifier))
+                db().commit()
+
+    def expire_learning_jobs():
+        cutoff = datetime.fromtimestamp(time.time()-540, timezone.utc).isoformat(timespec='microseconds')
+        db().execute("UPDATE learning_jobs SET status='error',error='任务已中断或超时，请重新整理。未修改已有笔记。',updated_at=? WHERE status='pending' AND created_at<?",
+                     (now(), cutoff))
+        db().commit()
+
+    @app.get('/learning')
+    def learning_page():
+        expire_learning_jobs()
+        jobs = db().execute('SELECT * FROM learning_jobs ORDER BY created_at DESC LIMIT 20').fetchall()
+        return render_template('learning.html', active='learning', bridge=bridge_status(), projects=projects(), jobs=jobs)
+
+    @app.post('/learning/start')
+    def learning_start():
+        topic = request.form.get('topic', '').strip()
+        project_id = request.form.get('project_id') or None
+        mode = request.form.get('mode', 'public')
+        if mode not in {'public','codex'}:
+            return jsonify(error='请选择有效的检索方式。'), 400
+        if not topic or len(topic)>240 or any(ord(char)<32 for char in topic):
+            return jsonify(error='请输入学习主题，最多 240 字。'), 400
+        if project_id and not db().execute("SELECT 1 FROM entries WHERE id=? AND kind='project'", (project_id,)).fetchone():
+            return jsonify(error='关联研究项目不存在。'), 400
+        expire_learning_jobs()
+        if db().execute("SELECT 1 FROM learning_jobs WHERE status='pending'").fetchone():
+            return jsonify(error='已有学习主题正在整理，请等待完成。'), 409
+        try:
+            if not app.extensions['codex_bridge'].status()['available']:
+                return jsonify(error='未找到 Codex CLI，请先在「科研助手」查看新电脑连接说明。'), 503
+        except BridgeError as error:
+            return jsonify(error=str(error)), 503
+        identifier, stamp = uuid.uuid4().hex, now()
+        db().execute('INSERT INTO learning_jobs VALUES (?,?,?,?,?,?,?,?)',
+                     (identifier, topic, project_id, 'pending', None, '', stamp, stamp))
+        db().commit()
+        try:
+            threading.Thread(target=learning_worker, args=(identifier, topic, project_id, mode), daemon=True).start()
+        except RuntimeError:
+            db().execute("UPDATE learning_jobs SET status='error',error='无法启动整理任务，请重试。' WHERE id=?", (identifier,))
+            db().commit()
+            return jsonify(error='无法启动整理任务，请重试。'), 503
+        return jsonify(job_url=url_for('learning_job', identifier=identifier)), 202
+
+    @app.get('/learning/job/<identifier>')
+    def learning_job(identifier):
+        expire_learning_jobs()
+        row = db().execute('SELECT * FROM learning_jobs WHERE id=?', (identifier,)).fetchone()
+        if not row:
+            abort(404)
+        return jsonify(status=row['status'], topic=row['topic'], error=row['error'],
+                       review_url=url_for('import_review', identifier=row['draft_id']) if row['status']=='ready' else None)
 
     def paper_source(entry):
         """Only accept a cache owned by this record and matching its current URL."""
@@ -468,7 +555,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             submit_url = url_for('edit',identifier=target)
         else:
             kind = request.form.get('kind','idea')
-            if kind not in {'idea','paper','experiment','writing'}:
+            if kind not in {'idea','paper','experiment','writing','knowledge'}:
                 abort(400,'请选择有效的笔记类型。')
             entry = {'title':thread['title'], 'content':message['content'], 'status':'待开始',
                      'project_id':thread['project_id'], 'tags':'AI 草稿', 'meta':{}}
@@ -549,10 +636,16 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         if project:
             sql += " AND e.project_id=?"
             params.append(project)
+        category = request.args.get('category', '') if kind=='knowledge' else ''
+        if category:
+            if category not in KNOWLEDGE_CATEGORIES:
+                abort(400, '请选择有效的知识分类。')
+            sql += " AND json_extract(e.metadata,'$.knowledge_category')=?"
+            params.append(category)
         rows = [dict(row) for row in db().execute(sql + " ORDER BY e.updated_at DESC", params)]
         for row in rows:
             row["meta"] = json.loads(row["metadata"])
-        return render_template("library.html", active=kind, kind=kind, entries=rows, projects=projects(), query=query, status=status, project=project)
+        return render_template("library.html", active=kind, kind=kind, entries=rows, projects=projects(), query=query, status=status, project=project, category=category)
 
     @app.get("/search")
     def search():
@@ -579,6 +672,13 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         tags = ", ".join(tag.strip() for tag in request.form.get("tags", "").replace("，", ",").split(",") if tag.strip())[:1000]
         fields = ["authors", "year", "url", "bibtex", "model", "dataset", "seed", "metric_name", "metric_value", "params", "code_version", "location", "data_version", "external_url"]
         meta = {field: request.form.get(field, "").strip() for field in fields}
+        if kind == 'knowledge':
+            category = request.form.get('knowledge_category', '其他')
+            if category not in KNOWLEDGE_CATEGORIES:
+                raise ValueError('请选择有效的知识分类。')
+            origin = current['meta'] if current else checked_draft(import_id).get('metadata', {}) if import_id else {}
+            meta.update({key: origin[key] for key in ['learning_topic', 'search_date', 'search_count', 'search_method'] if key in origin})
+            meta['knowledge_category'] = category
         if current:
             for field in ['paper_source', 'paper_source_error']:
                 if field in current['meta']:
@@ -665,7 +765,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         if kind not in KINDS:
             abort(400,'请选择有效的记录类型。')
         entry = {'title':draft['title'],'content':draft['content'],'status':'待开始',
-                 'project_id':draft['project_id'],'tags':draft['tags'],'meta':{}}
+                 'project_id':draft['project_id'],'tags':draft['tags'],'meta':draft.get('metadata', {})}
         if draft['project_id'] and not db().execute("SELECT 1 FROM entries WHERE id=? AND kind='project'",(draft['project_id'],)).fetchone():
             flash('草稿指定的项目在本机不存在，请重新选择关联项目。','error')
             entry['project_id'] = None

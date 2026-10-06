@@ -20,7 +20,7 @@ class GitSyncTest(unittest.TestCase):
         subprocess.run(["git", "init", "--bare", "-b", "main", str(self.remote)], check=True, capture_output=True)
         self.repo_a = self.root / "computer-a"
         self.repo_a.mkdir()
-        for file in ["app.py", "git_sync.py", "github_auth.py", "codex_bridge.py", "draft_import.py", "research_cli.py", "math_compat.py", "paper_reader.py", "desktop_launcher.py", ".gitignore", ".gitattributes", "requirements.txt", "README.md"]:
+        for file in ["app.py", "git_sync.py", "github_auth.py", "codex_bridge.py", "draft_import.py", "research_cli.py", "math_compat.py", "paper_reader.py", "desktop_launcher.py", "learning.py", ".gitignore", ".gitattributes", "requirements.txt", "README.md"]:
             shutil.copyfile(ROOT / file, self.repo_a / file)
         self.a = create_app(self.repo_a / "data", testing=True, repo_dir=self.repo_a)
         self.client_a = self.setup_client(self.a)
@@ -104,6 +104,19 @@ class GitSyncTest(unittest.TestCase):
             file = db.execute("SELECT * FROM attachments WHERE entry_id=?", (paper,)).fetchone()
             self.assertEqual(db.execute("SELECT count(*) FROM entries").fetchone()[0], 3)
         self.assertEqual((self.b.config["DATA_DIR"] / "uploads" / file["storage_name"]).read_bytes(), payload)
+
+    def test_knowledge_card_and_code_restore_on_new_computer(self):
+        card = self.create(self.client_a, 'knowledge', title='ACT 知识卡', knowledge_category='模型架构',
+                           content='## 原理\n\n$z=f(o)$\n\n[原论文](https://arxiv.org/abs/2304.13705)', tags='ACT, CVAE')
+        self.sync(self.a)
+        self.clone_b()
+        self.assertTrue((self.ws_b.repo/'learning.py').is_file())
+        page = self.client_b.get('/library/knowledge?category=模型架构')
+        self.assertIn('ACT 知识卡'.encode(), page.data)
+        self.assertIn('原论文'.encode(), self.client_b.get(f'/entry/{card}').data)
+        with self.connection(self.b) as connection:
+            meta = json.loads(connection.execute('SELECT metadata FROM entries WHERE id=?',(card,)).fetchone()[0])
+            self.assertEqual(meta['knowledge_category'],'模型架构')
 
     def test_paper_text_cache_restores_on_new_computer_without_download(self):
         from unittest.mock import patch

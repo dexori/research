@@ -13,6 +13,8 @@ parser.add_argument('--fake-codex', action='store_true', help='Isolated determin
 args = parser.parse_args()
 
 class PreviewCodex:
+    def research_topic(self, topic):
+        return {'content':'# ACT 学习卡\n\n分类：模型架构\n标签：ACT, CVAE, action chunking\n\n## 一句话理解\n\n隔离测试知识卡，不是实际检索结果。\n\n$$L = \\sum_i d_i$$\n\n[原论文](https://arxiv.org/abs/2304.13705)\n\n[作者项目](https://tonyzhaozh.github.io/aloha/)', 'search_count':2}
     def login_status(self):
         return {'status':'signed_in','message':'隔离测试：CLI 报告已登录；没有调用模型。'}
     def status(self):
@@ -27,6 +29,10 @@ with tempfile.TemporaryDirectory(prefix="research-browser-") as directory:
     app = create_app(directory, testing=True)
     if args.fake_codex:
         app.extensions['codex_bridge'] = PreviewCodex()
+        class PreviewLearning:
+            def research(self,topic,bridge):
+                return bridge.research_topic(topic)
+        app.extensions['learning_researcher'] = PreviewLearning()
         class PreviewPaper:
             def read(self, **kwargs):
                 return {'text':'隔离测试论文正文：方法、证据与局限。'*80,'method':'隔离 PDF 测试','pages':2,'pages_read':2,'truncated':False}

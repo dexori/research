@@ -26,7 +26,7 @@ class SyncError(Exception):
 
 UUID = re.compile(r"[a-f0-9]{32}\Z")
 GITHUB_URL = re.compile(r"(?:https://github\.com/|git@github\.com:)[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+(?:\.git)?\Z")
-KINDS = {"project", "paper", "experiment", "dataset", "idea", "writing"}
+KINDS = {"project", "paper", "experiment", "dataset", "idea", "writing", "knowledge"}
 STATUSES = {"待开始", "进行中", "已完成", "已归档"}
 FIELDS = ["id", "kind", "title", "status", "tags", "project_id", "created_at", "updated_at"]
 
@@ -206,7 +206,7 @@ class GitWorkspace:
         if not self.has_repo():
             self.git("init", "-b", "main")
             # Only the app surface is selected; runtime data and secrets are excluded.
-            allowed = ["app.py", "git_sync.py", "github_auth.py", "codex_bridge.py", "draft_import.py", "research_cli.py", "math_compat.py", "paper_reader.py", "desktop_launcher.py", "requirements.txt", "README.md", ".gitignore", ".gitattributes",
+            allowed = ["app.py", "git_sync.py", "github_auth.py", "codex_bridge.py", "draft_import.py", "research_cli.py", "math_compat.py", "paper_reader.py", "desktop_launcher.py", "learning.py", "requirements.txt", "README.md", ".gitignore", ".gitattributes",
                        "templates", "static", "tests", "research-hub.service.example", "workspace"]
             files = [path for path in allowed if (self.repo / path).exists()]
             if files:

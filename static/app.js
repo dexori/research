@@ -68,6 +68,60 @@ if (githubAuth) {
   });
   poll();
 }
+const learningForm = document.querySelector('[data-learning-form]');
+document.querySelectorAll('[data-topic]').forEach(button => button.addEventListener('click', () => {
+  const input = document.querySelector('#learning-topic');
+  input.value = button.dataset.topic;
+  input.focus();
+}));
+const learningWait = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function pollLearning(url, target) {
+  target.textContent = '正在检索与整理，通常需要几分钟。可以关闭网页，稍后在最近任务中查看。';
+  for (let attempt=0; attempt<190; attempt++) {
+    const response = await fetch(url, {headers:{Accept:'application/json'}});
+    if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) throw new Error('无法查看任务，请刷新页面或重新登录。');
+    const job = await response.json();
+    if (job.status==='error') throw new Error(job.error || '整理未完成，请重试。');
+    if (job.status==='ready') {
+      target.textContent = '草稿已生成，尚未保存。';
+      const link = document.createElement('a');
+      link.className = 'button secondary'; link.href = job.review_url; link.textContent = '审核并保存知识卡';
+      target.append(' ', link);
+      return;
+    }
+    await learningWait(3000);
+  }
+  throw new Error('页面等待已结束。请刷新查看最近任务，未自动重复调用助手。');
+}
+learningForm?.addEventListener('submit', async event => {
+  event.preventDefault();
+  const button = learningForm.querySelector('[data-learning-submit]');
+  const target = learningForm.querySelector('[data-learning-status]');
+  let jobStatus;
+  button.disabled=true; target.textContent='正在提交学习主题…';
+  try {
+    const response = await fetch(learningForm.action, {method:'POST', body:new FormData(learningForm), headers:{Accept:'application/json'}});
+    if (!response.headers.get('content-type')?.includes('application/json')) throw new Error('页面已过期，请刷新或重新登录。');
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || '提交失败，请重试。');
+    const row = document.createElement('div'); row.className='learning-job';
+    const title = document.createElement('strong'); title.textContent=learningForm.elements.topic.value;
+    jobStatus = document.createElement('span'); jobStatus.className='small muted'; jobStatus.textContent='检索与整理中…';
+    row.append(title, jobStatus);
+    document.querySelector('[data-learning-empty]')?.remove();
+    document.querySelector('[data-learning-jobs]')?.prepend(row);
+    await pollLearning(result.job_url, target);
+  } catch(error) { target.textContent=error.message; }
+  finally {
+    button.disabled=false;
+    if (jobStatus) jobStatus.replaceChildren(...Array.from(target.childNodes,node=>node.cloneNode(true)));
+  }
+});
+document.querySelectorAll('[data-learning-job]').forEach(row => {
+  pollLearning(row.dataset.learningJob, row.querySelector('[data-job-status]')).catch(error => {
+    row.querySelector('[data-job-status]').textContent=error.message;
+  });
+});
 document.querySelector('[data-sync-form]')?.addEventListener('submit', () => {
   const button = document.querySelector('[data-sync-button]');
   button.disabled = true;

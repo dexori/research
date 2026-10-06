@@ -258,6 +258,7 @@ w=\begin{cases}
       await page.getByRole('button',{name:'保存草稿',exact:true}).click();
       const savedUrl = page.url();
       await page.getByRole('heading',{name:'审核后的公式讨论',exact:true}).waitFor();
+      await page.waitForFunction(()=>document.querySelectorAll('.prose .katex').length>=9);
       assert.ok(await page.locator('.prose .katex').count()>=9);
       await page.goto(draftUrl);
       assert.equal(page.url(),savedUrl);
@@ -269,9 +270,36 @@ w=\begin{cases}
       await page.goto(`${base}/search?q=网页上传待审核`);
       assert.equal(await page.locator('.search-results > a').count(),0);
     }
+    if (process.env.TEST_ASSISTANT==='1') {
+      await page.setViewportSize({width:1440,height:1000});
+      await page.goto(`${base}/learning`);
+      await page.getByRole('button',{name:'ACT 框架',exact:true}).click();
+      assert.match(await page.locator('#learning-topic').inputValue(),/CVAE/);
+      await page.locator('#learning-project').selectOption(projectId);
+      await page.getByRole('button',{name:'查资料并整理',exact:true}).click();
+      await page.locator('[data-learning-status]').getByRole('link',{name:'审核并保存知识卡',exact:true}).waitFor();
+      await page.screenshot({path:path.join(output,'learning-topic-desktop.png'),fullPage:true});
+      await page.locator('[data-learning-status]').getByRole('link',{name:'审核并保存知识卡',exact:true}).click();
+      await page.locator('.import-preview .katex').first().waitFor();
+      assert.equal(await page.locator('#knowledge_category').inputValue(),'模型架构');
+      assert.equal(await page.locator('#project_id').inputValue(),projectId);
+      await page.setViewportSize({width:390,height:844});
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth),false);
+      await page.screenshot({path:path.join(output,'knowledge-review-mobile.png'),fullPage:true});
+      await page.locator('#title').fill('审核后的 ACT 知识卡');
+      await page.getByRole('button',{name:'保存知识卡',exact:true}).click();
+      await page.getByRole('heading',{name:'审核后的 ACT 知识卡',exact:true}).waitFor();
+      await page.locator('.prose .katex').first().waitFor();
+      await page.goto(`${base}/library/knowledge?category=模型架构&q=ACT`);
+      assert.equal(await page.locator('.record-card').count(),1);
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth),false);
+      await page.screenshot({path:path.join(output,'knowledge-library-mobile.png'),fullPage:true});
+      await page.goto(`${base}/learning`);
+      assert.equal(await page.getByRole('link',{name:'审核知识卡',exact:true}).count(),1);
+    }
     assert.deepEqual(errors,[]);
     assert.deepEqual(externalRequests,[],'Math must not request a CDN or external service.');
-    console.log('Browser checks passed: owner login, records, attachments, exports, GitHub settings/login (mocked), 14 mobile routes, navigation, no console errors.' + (process.env.TEST_ASSISTANT==='1' ? ' Assistant: inline paper-only discussion, PDF reading/status (fake reader), Codex login check (fake CLI), multi-turn/reload, review/save and local formulas.' : '') + (process.env.TEST_DATA_DIR ? ' Terminal CLI → inbox → preview → type/project → save, replay protection, upload, mobile formulas, invalid TeX fallback, no math in code, no trusted links.' : '') + ' No external requests or GitHub operations.');
+    console.log('Browser checks passed: owner login, records, attachments, exports, GitHub settings/login (mocked), mobile routes, navigation, no console errors.' + (process.env.TEST_ASSISTANT==='1' ? ' Assistant: inline paper-only discussion, PDF reading/status (fake reader), Codex login check (fake CLI), multi-turn/reload, review/save and local formulas. Learning: topic → async draft → review/edit → knowledge card, formulas, classification/search, project and task history (fake search/CLI).' : '') + (process.env.TEST_DATA_DIR ? ' Terminal CLI → inbox → preview → type/project → save, replay protection, upload, mobile formulas, invalid TeX fallback, no math in code, no trusted links.' : '') + ' No external requests or GitHub operations.');
   } finally {
     await browser.close();
   }

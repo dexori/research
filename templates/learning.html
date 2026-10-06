@@ -1,0 +1,29 @@
+{% extends 'base.html' %}
+{% block title %}学习整理 · 研序{% endblock %}
+{% block content %}
+<div class="page-heading"><div><div class="eyebrow">LEARN · UNDERSTAND · REUSE</div><h1>输入主题，整理知识</h1><p class="muted">从原始论文与官方资料出发，把零散学习变成可复用的知识卡。</p></div><a class="button secondary" href="{{ url_for('library',kind='knowledge') }}">打开学习知识库</a></div>
+<section class="panel learning-panel">
+  <h2>今天想学什么？</h2>
+  <p class="small muted">使用本机 {{ bridge.profile }} · {{ bridge.model }}。仅本功能允许联网检索，不会发送其他私有笔记；会使用终端服务的额度。搜索能力取决于当前服务，登录成功并不代表可搜索。</p>
+  <form data-learning-form action="{{ url_for('learning_start') }}" method="post">
+    <input type="hidden" name="csrf" value="{{ csrf() }}">
+    <label for="learning-mode">检索方式</label>
+    <select id="learning-mode" name="mode"><option value="public">平台检索 arXiv 原论文（推荐，无需搜索 API Key）</option><option value="codex">Codex 网页搜索（当前服务尚未验证成功）</option></select>
+    <p class="small muted">文献模式适合 ACT、π0 等论文主题：平台检索并提取正文，终端负责整理。它不是全网搜索；其他主题可补充英文术语。若需要官方文档等非论文来源，可尝试 Codex 网页搜索，但当前服务测试没有返回可用搜索记录。</p>
+    <label for="learning-topic">学习主题</label>
+    <input id="learning-topic" name="topic" required maxlength="240" placeholder="例如：ACT 框架（机器人模仿学习），重点解释 action chunking 与 CVAE">
+    <div class="tag-list learning-examples"><button class="button secondary" type="button" data-topic="ACT 框架（机器人模仿学习），重点解释 action chunking、CVAE 和 temporal ensembling">ACT 框架</button><button class="button secondary" type="button" data-topic="π0 架构，重点解释 VLM、action expert 与 flow matching；不要混用 π0.5">π0 架构</button><button class="button secondary" type="button" data-topic="Flow matching 的数学直觉、训练目标和机器人动作生成的最小例子">Flow matching</button></div>
+    <label for="learning-project">关联研究项目（可选）</label>
+    <select id="learning-project" name="project_id"><option value="">独立学习记录</option>{% for project in projects %}<option value="{{ project.id }}">{{ project.title }}</option>{% endfor %}</select>
+    <p class="small muted">流程：检索 → 知识卡草稿 → 审核编辑 → 保存。内容含原理、公式、最小例子、自测问题与来源。检索记录和引用链接不代表所有事实均已核验。</p>
+    <button class="button primary" data-learning-submit {{ 'disabled' if not bridge.available }}>查资料并整理</button>
+    <p data-learning-status role="status" aria-live="polite"></p>
+  </form>
+  {% if not bridge.available %}<p class="notice error">本机尚未找到 Codex CLI。请在<a href="{{ url_for('assistant_page') }}">科研助手</a>查看连接说明。</p>{% endif %}
+</section>
+<section class="panel learning-panel"><h2>最近整理任务</h2><p class="small muted">关掉网页不会取消后台任务；电脑和平台需要保持运行。未保存的草稿与任务仅留在本机；审核保存后再同步 GitHub，才能在其他电脑取回。</p>
+<div data-learning-jobs>{% for job in jobs %}<div class="learning-job" {% if job.status=='pending' %}data-learning-job="{{ url_for('learning_job',identifier=job.id) }}"{% endif %}>
+  <strong>{{ job.topic }}</strong><span class="small muted" data-job-status>{{ {'pending':'检索与整理中…','ready':'草稿已生成，待审核','error':'未完成'}[job.status] }}</span>
+  {% if job.status=='ready' %}<a class="text-link" href="{{ url_for('import_review',identifier=job.draft_id) }}">审核知识卡</a>{% elif job.status=='error' %}<p class="notice error">{{ job.error }}</p>{% endif %}
+</div>{% else %}<p class="muted" data-learning-empty>还没有整理任务，输入第一个主题即可开始。</p>{% endfor %}</div></section>
+{% endblock %}
