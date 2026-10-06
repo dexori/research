@@ -1,0 +1,7 @@
+{% extends 'base.html' %}
+{% block title %}导出与备份 · 研序{% endblock %}
+{% block content %}
+<div class="page-heading"><div><div class="eyebrow">EXPORT YOUR RESEARCH</div><h1>导出与备份</h1><p class="muted">为论文写作和长期存档准备一份副本。</p></div><a class="button secondary" href="{{ url_for('sync_page') }}">GitHub 同步</a></div>
+<div class="backup-grid"><section class="panel backup-card"><span class="empty-symbol">▦</span><h2>完整工作空间备份</h2><p>下载所有记录、Markdown 笔记、附件和数据库。备份包含访问密码的加密摘要，请妥善保存。</p><a class="button primary" href="{{ url_for('download_backup') }}">下载完整备份 ZIP</a><small>包含恢复说明 · 不包含浏览器登录凭据</small></section><section class="panel backup-card"><span class="empty-symbol">⌁</span><h2>实验结果表格</h2><p>导出实验参数、指标、种子与代码版本，用 Excel 或 Python 进一步分析、整理论文表格。</p><a class="button secondary" href="{{ url_for('export_csv') }}">下载实验 CSV</a><small>UTF-8 格式 · 包含全部实验记录</small></section></div>
+<section class="panel backup-help"><h2>换电脑继续使用</h2><p>在当前电脑的「GitHub 同步」页面完成同步，然后可以关闭电脑。在另一台电脑克隆或拉取同一仓库，启动工作台，平台会自动读取仓库中的笔记与附件。</p><p>网页保存表示资料已写入本机；同步页面提示成功后，最新资料才已上传 GitHub。离线可以继续编辑，联网后再同步。</p><h2>大文件如何保存</h2><p>论文 PDF、图片、CSV 等小文件随仓库同步。大数据集、checkpoint 和大视频建议通过「数据与模型」记录存储位置和版本。</p></section>
+{% endblock %}

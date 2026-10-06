@@ -1,0 +1,6 @@
+{% extends 'base.html' %}
+{% block title %}{{ '创建工作空间' if setup else '登录' }} · 研序{% endblock %}
+{% block content %}
+<div class="auth-card"><div class="brand auth-brand"><span class="brand-mark">研</span><span>研序<small>RESEARCH HUB</small></span></div><div class="eyebrow">YOUR RESEARCH, CONNECTED</div><h1>{{ '创建你的科研工作空间' if setup else '回到你的研究' }}</h1><p class="muted">{{ '设置一个访问密码，开始积累文献、实验与思考。' if setup else '登录后继续阅读、实验与写作。' }}</p>
+<form method="post"><input type="hidden" name="csrf" value="{{ csrf() }}"><label for="password">{{ '访问密码（至少 10 个字符）' if setup else '访问密码' }}</label><input id="password" name="password" type="password" required minlength="{{ 10 if setup else 1 }}" autocomplete="{{ 'new-password' if setup else 'current-password' }}" autofocus>{% if setup %}<label for="confirm">再次输入密码</label><input id="confirm" name="confirm" type="password" required minlength="10" autocomplete="new-password">{% endif %}<button class="button primary full">{{ '创建工作空间' if setup else '进入工作台' }}</button></form><p class="auth-foot">本机运行 · 科研资料可同步到 GitHub</p></div>
+{% endblock %}

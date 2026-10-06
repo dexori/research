@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="私人科研工作台：关联文献笔记、研究项目、实验结果与论文草稿。">
+  <title>{% block title %}{{ app_name }}{% endblock %}</title>
+  <link rel="icon" href="{{ url_for('static',filename='favicon.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ url_for('static',filename='style.css') }}">
+  <script defer src="{{ url_for('static',filename='app.js') }}"></script>
+</head>
+<body>
+{% if session.get('authenticated') %}
+<div class="shell">
+  <aside class="sidebar">
+    <a class="brand" href="{{ url_for('home') }}"><span class="brand-mark">研</span><span>研序<small>RESEARCH HUB</small></span></a>
+    <div class="workspace-label">个人科研工作台</div>
+    <nav aria-label="主导航">
+      <a class="nav-link {{ 'selected' if active=='home' }}" href="{{ url_for('home') }}"><span aria-hidden="true">▣</span>工作概览</a>
+      <div class="nav-label">研究空间</div>
+      {% for key,labels in kinds.items() %}
+      <a class="nav-link {{ 'selected' if active==key }}" href="{{ url_for('library',kind=key) }}"><span aria-hidden="true">{{ labels[2] }}</span>{{ labels[0] }}</a>
+      {% endfor %}
+      <div class="nav-label">资料管理</div>
+      <a class="nav-link {{ 'selected' if active=='sync' }}" href="{{ url_for('sync_page') }}"><span aria-hidden="true">⇅</span>GitHub 同步</a>
+      <a class="nav-link {{ 'selected' if active=='backup' }}" href="{{ url_for('backup') }}"><span aria-hidden="true">⇣</span>导出与备份</a>
+    </nav>
+    <div class="sidebar-bottom"><span class="avatar">我</span><div>我的工作空间<small>私人 · 密码保护</small></div><form action="{{ url_for('logout') }}" method="post"><input type="hidden" name="csrf" value="{{ csrf() }}"><button class="logout" title="退出登录" aria-label="退出登录">退出</button></form></div>
+  </aside>
+  <div class="main-wrap">
+    <header class="topbar"><button class="menu-toggle" aria-label="展开导航" aria-expanded="false">☰</button><span class="top-context">Research Workspace <span class="context-divider">/</span> {{ kinds[active][0] if active in kinds else 'GitHub 同步' if active=='sync' else '资料管理' if active=='backup' else '工作概览' }}</span><form class="global-search" action="{{ url_for('search') }}"><span aria-hidden="true">⌕</span><input name="q" type="search" aria-label="全局搜索" placeholder="搜索文献、实验、想法…" value="{{ query if active=='search' else '' }}"><kbd>/</kbd></form></header>
+    <main id="main-content">
+{% else %}<main class="auth-page">{% endif %}
+  {% for category,message in get_flashed_messages(with_categories=true) %}<div class="notice {{ category }}" role="status">{{ message }}</div>{% endfor %}
+  {% if workspace_error and active!='sync' %}<div class="notice error" role="status">同步文件需要检查：{{ workspace_error }} <a class="text-link" href="{{ url_for('sync_page') }}">查看同步状态</a></div>{% endif %}
+  {% block content %}{% endblock %}
+</main>
+{% if session.get('authenticated') %}</div></div>{% endif %}
+</body></html>

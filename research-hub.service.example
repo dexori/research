@@ -1,0 +1,18 @@
+[Unit]
+Description=Private Research Hub
+After=network.target
+
+[Service]
+Type=simple
+User=z
+WorkingDirectory=/home/z/research-hub
+ExecStart=/home/z/research-hub/.venv/bin/python /home/z/research-hub/app.py --host 127.0.0.1 --port 8765
+Environment=RESEARCH_DATA_DIR=/home/z/research-hub/data
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
