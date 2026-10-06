@@ -24,6 +24,7 @@ from markupsafe import Markup
 from werkzeug.security import check_password_hash, generate_password_hash
 from git_sync import GitWorkspace, SyncError
 from github_auth import GitHubAuth
+from codex_bridge import CodexBridge, BridgeError, retrieve_notes
 
 ROOT = Path(__file__).resolve().parent
 KINDS = {
@@ -54,6 +55,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
     app.extensions["git_workspace"] = workspace
     github = GitHubAuth(workspace, auto_check=not testing)
     app.extensions["github_auth"] = github
+    app.extensions["codex_bridge"] = CodexBridge(directory)
     secret_path = directory / "session.key"
     try:
         fd = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -103,6 +105,19 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
                 created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS sync_files (entry_id TEXT PRIMARY KEY, hash TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS ai_threads (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL,
+                project_id TEXT REFERENCES entries(id) ON DELETE SET NULL,
+                context_id TEXT REFERENCES entries(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS ai_messages (
+                id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES ai_threads(id) ON DELETE CASCADE,
+                role TEXT NOT NULL CHECK(role IN ('user','assistant')), content TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'complete', sources TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_messages_thread ON ai_messages(thread_id,created_at);
         """)
         db().commit()
         try:
@@ -142,7 +157,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             except (SyncError, OSError) as error:
                 db().rollback()
                 workspace.error = str(error)
-            if request.method == "POST" and request.endpoint not in {"sync_configure", "sync_run", "sync_resolve", "github_login"}:
+            if request.method == "POST" and request.endpoint not in {"sync_configure", "sync_run", "sync_resolve", "github_login", "assistant_send"}:
                 if workspace.conflicts() or workspace.error:
                     abort(409, "同步资料需要检查。请先打开「GitHub 同步」处理冲突或附件缺失，再编辑记录。")
 
@@ -184,6 +199,135 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
     app.jinja_env.filters["markdown"] = render_md
     app.jinja_env.filters["day"] = lambda value: value[:10]
     app.jinja_env.filters["filesize"] = lambda value: f"{value / 1024 / 1024:.1f} MB" if value >= 1024 * 1024 else f"{value / 1024:.1f} KB"
+
+    def chat_thread(identifier):
+        row = db().execute('SELECT * FROM ai_threads WHERE id=?', (identifier,)).fetchone()
+        if row is None:
+            abort(404)
+        return dict(row)
+
+    def chat_messages(identifier):
+        messages = []
+        for row in db().execute('SELECT * FROM ai_messages WHERE thread_id=? ORDER BY created_at,id', (identifier,)):
+            message = dict(row)
+            message['sources'] = json.loads(message['sources'])
+            message['html'] = str(render_md(message['content']))
+            messages.append(message)
+        return messages
+
+    @app.get('/assistant')
+    def assistant_page():
+        identifier = request.args.get('thread')
+        thread = chat_thread(identifier) if identifier else None
+        context = get_entry(request.args['entry']) if request.args.get('entry') and not thread else None
+        threads = db().execute('SELECT * FROM ai_threads ORDER BY updated_at DESC LIMIT 40').fetchall()
+        try:
+            bridge_state = app.extensions['codex_bridge'].status()
+        except BridgeError as error:
+            bridge_state = {'available': False, 'profile': 'Codex', 'model': '无法读取配置'}
+            flash(str(error), 'error')
+        return render_template('assistant.html', active='assistant', bridge=bridge_state,
+                               thread=thread, threads=threads, messages=chat_messages(identifier) if thread else [],
+                               projects=projects(), context=context)
+
+    @app.get('/assistant/thread/<identifier>')
+    def assistant_thread(identifier):
+        thread = chat_thread(identifier)
+        # A killed server must not leave a conversation waiting forever.
+        cutoff = datetime.fromtimestamp(time.time()-240, timezone.utc).isoformat(timespec='microseconds')
+        db().execute("UPDATE ai_messages SET status='error',content='回答已中断或超时，请重新发送问题。' WHERE thread_id=? AND status='pending' AND created_at<?",
+                     (identifier,cutoff))
+        db().commit()
+        return jsonify(thread=thread,messages=chat_messages(identifier))
+
+    @app.post('/assistant/send')
+    def assistant_send():
+        question = request.form.get('message', '').strip()
+        if not question or len(question) > 4000:
+            return jsonify(error='请输入问题，最多 4000 字。'), 400
+        bridge = app.extensions['codex_bridge']
+        try:
+            if not bridge.status()['available']:
+                return jsonify(error='未找到 Codex CLI，请先安装并在终端登录。'), 503
+        except BridgeError as error:
+            return jsonify(error=str(error)), 503
+        identifier = request.form.get('thread_id', '')
+        if identifier:
+            thread = chat_thread(identifier)
+        else:
+            project_id = request.form.get('project_id') or None
+            context_id = request.form.get('context_id') or None
+            if project_id and not db().execute("SELECT 1 FROM entries WHERE id=? AND kind='project'", (project_id,)).fetchone():
+                return jsonify(error='选择的研究项目不存在。'), 400
+            if context_id:
+                context = get_entry(context_id)
+                if project_id and context['id'] != project_id and context['project_id'] != project_id:
+                    return jsonify(error='当前资料不属于所选项目。'), 400
+            identifier = uuid.uuid4().hex
+            stamp = now()
+            db().execute('INSERT INTO ai_threads VALUES (?,?,?,?,?,?)',
+                         (identifier, question[:70], project_id, context_id, stamp, stamp))
+            db().commit()
+            thread = chat_thread(identifier)
+        if db().execute("SELECT 1 FROM ai_messages WHERE thread_id=? AND status='pending'", (identifier,)).fetchone():
+            return jsonify(error='这段对话还有问题正在回答，请等待完成。'), 409
+        previous = chat_messages(identifier)
+        previous_ids = [source['id'] for message in previous[-4:] for source in message['sources']]
+        sources = retrieve_notes(db(), question, thread['project_id'], previous_ids, thread['context_id'])
+        references = [{key: note[key] for key in ['id','title','kind','version']} for note in sources]
+        message_id, answer_id = uuid.uuid4().hex, uuid.uuid4().hex
+        db().execute("INSERT INTO ai_messages (id,thread_id,role,content,created_at) VALUES (?,?,'user',?,?)",
+                     (message_id, identifier, question, now()))
+        db().execute("INSERT INTO ai_messages (id,thread_id,role,status,sources,created_at) VALUES (?,?,'assistant','pending',?,?)",
+                     (answer_id, identifier, json.dumps(references,ensure_ascii=False), now()))
+        db().execute('UPDATE ai_threads SET updated_at=? WHERE id=?', (now(),identifier))
+        db().commit()
+        history = [{'role': item['role'], 'content': item['content'][:2000]}
+                   for item in previous if item['status']=='complete'][-10:]
+        # Do not freeze the entire research workspace while Codex is thinking.
+        workspace.lock.release()
+        g.workspace_locked = False
+        error = None
+        try:
+            answer = bridge.answer(question, history, sources)
+        except BridgeError as failure:
+            error = str(failure)
+            answer = error
+        except Exception:
+            error = answer = '本次回答未完成，问题已保留。请检查 Codex 登录与网络后重试。'
+        with workspace.lock:
+            db().execute('UPDATE ai_messages SET content=?,status=? WHERE id=?',
+                         (answer, 'error' if error else 'complete', answer_id))
+            db().execute('UPDATE ai_threads SET updated_at=? WHERE id=?', (now(),identifier))
+            db().commit()
+            messages = chat_messages(identifier)
+        return jsonify(thread_id=identifier, messages=messages, error=error), 502 if error else 200
+
+    @app.post('/assistant/draft')
+    def assistant_draft():
+        message = db().execute("SELECT * FROM ai_messages WHERE id=? AND role='assistant' AND status='complete'",
+                               (request.form.get('message_id',''),)).fetchone()
+        if message is None:
+            abort(404)
+        thread = chat_thread(message['thread_id'])
+        target = request.form.get('target_id') or None
+        if target:
+            entry = get_entry(target)
+            if target not in {source['id'] for source in json.loads(message['sources'])}:
+                abort(400, '只能追加到本次提供的参考资料，请重新选择。')
+            entry['content'] += '\n\n## 与 Codex 的讨论草稿（待审核）\n\n' + message['content']
+            kind, editing = entry['kind'], True
+            submit_url = url_for('edit',identifier=target)
+        else:
+            kind = request.form.get('kind','idea')
+            if kind not in {'idea','paper','experiment','writing'}:
+                abort(400,'请选择有效的笔记类型。')
+            entry = {'title':thread['title'], 'content':message['content'], 'status':'待开始',
+                     'project_id':thread['project_id'], 'tags':'AI 草稿', 'meta':{}}
+            editing, submit_url = False, url_for('new',kind=kind)
+        flash('这是尚未保存的 AI 草稿。请核对事实与引用，编辑并点击保存后才会写入资料。','success')
+        return render_template('editor.html', active=kind, kind=kind, entry=entry,
+                               projects=projects(), editing=editing, submit_url=submit_url)
 
     @app.route("/setup", methods=["GET", "POST"])
     def setup():

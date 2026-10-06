@@ -1,4 +1,5 @@
-// Run against tests/preview_server.py; never uses the owner's real workspace.
+// Run against tests/preview_server.py (use --fake-codex with TEST_ASSISTANT=1).
+// Never uses the owner's real workspace.
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -117,7 +118,7 @@ const crypto = require('node:crypto');
     await page.locator('.github-new-computer summary').click();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth),false);
     await page.screenshot({path:path.join(output,'github-new-computer-mobile.png'),fullPage:true});
-    for (const route of ['/', '/library/paper','/library/experiment','/library/dataset','/library/idea','/library/writing','/new/paper','/new/experiment','/backup','/sync', new URL(paperUrl).pathname,new URL(experimentUrl).pathname]) {
+    for (const route of ['/', '/library/paper','/library/experiment','/library/dataset','/library/idea','/library/writing','/new/paper','/new/experiment','/backup','/sync','/assistant', new URL(paperUrl).pathname,new URL(experimentUrl).pathname]) {
       await page.goto(base + route);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
       assert.equal(overflow,false,`Horizontal overflow: ${route}`);
@@ -131,8 +132,46 @@ const crypto = require('node:crypto');
     await page.screenshot({path:path.join(output,'workspace-mobile.png'),fullPage:true});
     await page.goto(experimentUrl);
     await page.screenshot({path:path.join(output,'experiment-mobile.png'),fullPage:true});
+    if (process.env.TEST_ASSISTANT === '1') {
+      // Requires preview_server.py --fake-codex. This never calls the actual model.
+      await page.setViewportSize({width:1440,height:1080});
+      await page.goto(paperUrl);
+      await page.getByRole('link',{name:'与 Codex 讨论',exact:true}).click();
+      assert.equal(await page.locator('#chat-project').inputValue(),projectId);
+      await page.locator('#chat-message').fill('根据这条笔记帮我设计对照实验');
+      await page.getByRole('button',{name:'发送给 Codex',exact:true}).click();
+      await page.locator('.chat-message.assistant.complete').waitFor();
+      assert.match(page.url(), /thread=/);
+      assert.equal(await page.locator('.chat-message').count(),2);
+      assert.ok(await page.locator('.chat-sources a').count() >= 1);
+      assert.equal(await page.locator('#chat-project').isDisabled(),true);
+      const threadUrl = page.url();
+      await page.locator('#chat-message').fill('继续细化研究假设');
+      await page.locator('#chat-message').press('Control+Enter');
+      await page.waitForFunction(() => document.querySelectorAll('.chat-message').length===4);
+      await page.reload();
+      assert.equal(await page.locator('.chat-message').count(),4);
+      await page.screenshot({path:path.join(output,'research-assistant-desktop.png'),fullPage:true});
+      await page.setViewportSize({width:390,height:844});
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth>window.innerWidth),false);
+      await page.screenshot({path:path.join(output,'research-assistant-mobile.png'),fullPage:true});
+      await page.locator('.chat-draft-form').last().locator('button').click();
+      assert.match(await page.locator('#content').inputValue(), /待验证的假设/);
+      assert.equal(await page.locator('form.editor-form').getAttribute('action'),'/new/idea');
+      await page.locator('#title').fill('已审核的研究想法（隔离测试）');
+      await page.getByRole('button',{name:'保存想法',exact:true}).click();
+      await page.getByRole('heading',{name:'已审核的研究想法（隔离测试）',exact:true}).waitFor();
+      await page.goto(threadUrl);
+      await page.locator('.chat-draft-form').first().locator('[name=target_id]').selectOption(new URL(paperUrl).pathname.split('/').pop());
+      await page.locator('.chat-draft-form').first().locator('button').click();
+      assert.match(await page.locator('#content').inputValue(), /浏览器实际修改。/);
+      assert.match(await page.locator('#content').inputValue(), /与 Codex 的讨论草稿/);
+      // Deliberately leave this append draft unsaved and confirm original content was not changed.
+      await page.goto(paperUrl);
+      assert.equal(await page.getByRole('heading',{name:'与 Codex 的讨论草稿（待审核）',exact:true}).count(),0);
+    }
     assert.deepEqual(errors,[]);
-    console.log('Browser checks passed: GitHub device login/code/retry/success (mocked), owner login, create/edit, project links, attachments, search, CSV/Markdown/ZIP downloads, GitHub settings, 12 mobile routes, navigation, no console errors. No external GitHub operations were performed.');
+    console.log('Browser checks passed: owner login, records, attachments, exports, GitHub settings/login (mocked), 13 mobile routes, navigation, no console errors.' + (process.env.TEST_ASSISTANT==='1' ? ' Assistant: context, multi-turn, sources, reload, desktop/mobile, review/save and unsaved append preservation (fake CLI, no model calls).' : '') + ' No external GitHub operations were performed.');
   } finally {
     await browser.close();
   }
