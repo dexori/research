@@ -164,6 +164,7 @@ function displayLearning(job) {
     // This HTML is rendered and sanitized on the authenticated server, never raw CLI text.
     output.innerHTML=html || '<p class="muted">尚未收到公开正文。</p>';
     window.renderResearchMath?.(output);
+    window.renderResearchDiagrams?.(output);
   }
   const review=progressPanel.querySelector('[data-learning-review]'); review.replaceChildren();
   if (job.status==='ready' && job.review_url) review.append(learningReviewLink(job.review_url));

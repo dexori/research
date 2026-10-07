@@ -15,7 +15,7 @@ args = parser.parse_args()
 
 class PreviewCodex:
     def research_topic(self, topic, on_progress=None, **selection):
-        return {'content':'# ACT 学习卡\n\n分类：模型架构\n标签：ACT, CVAE, action chunking\n\n## 一句话理解\n\n隔离测试知识卡，不是实际检索结果。\n\n$$L = \\sum_i d_i$$\n\n[原论文](https://arxiv.org/abs/2304.13705)\n\n[作者项目](https://tonyzhaozh.github.io/aloha/)', 'search_count':2}
+        return {'content':'# ACT 学习卡\n\n分类：模型架构\n标签：ACT, CVAE, action chunking\n\n## 一句话理解\n\n隔离测试知识卡，不是实际检索结果。\n\n```mermaid\nflowchart LR\nA["观测"] --> B["动作块"]\n```\n\n$$L = \\sum_i d_i$$\n\n[原论文](https://arxiv.org/abs/2304.13705)\n\n[作者项目](https://tonyzhaozh.github.io/aloha/)', 'search_count':2}
     def login_status(self):
         return {'status':'signed_in','message':'隔离测试：CLI 报告已登录；没有调用模型。'}
     def status(self):
@@ -23,7 +23,7 @@ class PreviewCodex:
 
     def answer(self, question, history, sources, **selection):
         return '## 研究讨论草稿\n\n**待验证的假设**，不是已证实的实验结论。\n\n行内公式：$z_t = f_\\theta(o_t)$。\n\n$$\nL = \\sum_{i=1}^{n} d_i\n$$\n\n' + (
-            f"参考 [{sources[0]['title']}](/entry/{sources[0]['id']})" if sources else '未检索到相关资料。') + '\n\n隔离测试请求设置：'+str(selection)
+            f"参考 [{sources[0]['title']}](/entry/{sources[0]['id']})" if sources else '未检索到相关资料。') + '\n\n```mermaid\nflowchart LR\nA["研究问题"] --> B["对照实验"] --> C["待验证结果"]\n```\n\n隔离测试请求设置：'+str(selection)
 
 with tempfile.TemporaryDirectory(prefix="research-browser-") as directory:
     print('Browser fixture data: '+directory,flush=True)

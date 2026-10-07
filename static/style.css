@@ -21,6 +21,19 @@
 .paper-chat{margin-top:24px;min-width:0}.paper-chat-context{padding:18px 24px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.paper-chat-context p{margin:8px 0}.paper-chat-context strong{font-size:.875rem}.paper-chat .assistant-chat{min-height:500px}.paper-chat .assistant-chat-heading .button{flex-shrink:0}.assistant-help{padding:24px;margin-top:24px}.codex-setup{margin-top:16px;overflow-wrap:anywhere}.codex-setup summary,.paper-source summary{cursor:pointer;color:var(--green);line-height:1.8}.codex-setup ol{padding-left:20px;line-height:1.85}.codex-setup code{overflow-wrap:anywhere;white-space:normal}.paper-source form{margin:12px 0}.paper-source button{white-space:normal}.paper-text-preview{max-height:260px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:.75rem;background:var(--bg);padding:12px;border-radius:6px}
 @media(max-width:720px){.import-upload,.import-help,.import-review-info{padding:22px}.import-type-form select,.import-type-form button{width:100%}.import-upload .button{width:100%}.arithmatex.math-inline{font-size:.95em}}
 /* Topic research uses the existing workspace panels and responsive form styles. */
+.research-diagram { margin: 22px 0; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: #fafcfb; min-width: 0; }
+.research-diagram figcaption { color: var(--green); font-size: .8125rem; font-weight: 600; margin-bottom: 12px; }
+.research-diagram-viewport { overflow: auto; width: 100%; min-width: 0; background: white; border-radius: 7px; }
+.research-diagram-image { display: block; width: 100%; height: auto; max-width: none; }
+.research-diagram-tools { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.research-diagram-tools .button { font-size: .8125rem; padding: 7px 12px; min-height: 34px; }
+.research-diagram summary { cursor: pointer; font-size: .8125rem; color: var(--muted); }
+.research-diagram pre { margin-top: 12px; max-height: 340px; overflow: auto; white-space: pre-wrap; }
+.research-diagram-worker { position: fixed; left: -10000px; top: 0; width: 1200px; height: 900px; border: 0; opacity: 0; pointer-events: none; }
+.research-diagram-dialog { width: min(1300px,96vw); max-width: 96vw; max-height: 94vh; padding: 20px; border: 1px solid var(--line); border-radius: 12px; }
+.research-diagram-dialog::backdrop { background: #12282099; }
+.research-diagram-dialog .research-diagram-viewport { max-height: 76vh; }
+@media(max-width:720px) { .research-diagram { padding: 12px; } .research-diagram-dialog { padding: 12px; } }
 .codex-selection { border: 1px solid var(--line); border-radius: 9px; padding: 14px; margin: 0 0 20px; background: #f7faf9; }
 .codex-selection-grid { display: grid; grid-template-columns: minmax(0,1.4fr) minmax(0,1fr); gap: 14px; }
 .codex-selection label { margin-top: 0; }

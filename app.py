@@ -189,6 +189,11 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "same-origin"
         response.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; script-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+        if request.endpoint=='diagram_renderer':
+            # Only this opaque-origin sandbox permits Mermaid's generated SVG styles.
+            # It cannot access the parent, fetch data, load images, or submit forms.
+            response.headers['Content-Security-Policy'] = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'none'; font-src 'none'; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'none'; sandbox allow-scripts"
+            response.headers['X-Frame-Options'] = 'SAMEORIGIN'
         if request.endpoint != "static":
             response.headers["Cache-Control"] = "no-store"
         return response
@@ -465,6 +470,10 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
                                  attributes=safe_attribute, protocols=["http", "https", "mailto"], strip=True))
 
     app.jinja_env.filters["markdown"] = render_md
+
+    @app.get('/diagrams/renderer')
+    def diagram_renderer():
+        return render_template('diagram_renderer.html')
     app.jinja_env.filters["day"] = lambda value: value[:10]
     app.jinja_env.filters["filesize"] = lambda value: f"{value / 1024 / 1024:.1f} MB" if value >= 1024 * 1024 else f"{value / 1024:.1f} KB"
 
