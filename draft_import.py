@@ -10,6 +10,9 @@ from research_images import validate_images
 
 MAX_BYTES = 2 * 1024 * 1024
 SUFFIXES = {'.md', '.markdown', '.txt'}
+EXPERIMENT_METADATA = {'model', 'dataset', 'seed', 'learning_rate', 'batch_size', 'total_steps', 'epochs',
+                       'log_path', 'training_pid', 'gpu_ids', 'params', 'code_version',
+                       'discovery_identity', 'discovery_server', 'discovery_sources', 'discovery_time'}
 
 
 def decode_text(raw):
@@ -50,10 +53,13 @@ def validate(draft):
     decode_text(content.encode('utf-8'))
     metadata=draft.get('metadata',{})
     validate_images(draft.get('images', []))
+    allowed = {'knowledge_category','learning_topic','search_date','search_count','search_method'}
+    if draft['kind'] == 'experiment':
+        allowed |= EXPERIMENT_METADATA
     if (not isinstance(metadata,dict) or not all(isinstance(k,str) and isinstance(v,str) for k,v in metadata.items())
-            or set(metadata)-{'knowledge_category','learning_topic','search_date','search_count','search_method'}
-            or len(json.dumps(metadata))>4000):
-        raise ValueError('草稿学习元信息无效。')
+            or set(metadata)-allowed
+            or len(json.dumps(metadata))>(16000 if draft['kind']=='experiment' else 4000)):
+        raise ValueError('草稿元信息无效。')
     return draft
 
 

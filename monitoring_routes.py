@@ -10,6 +10,8 @@ from flask import abort, flash, g, jsonify, redirect, render_template, request, 
 from git_sync import SyncError, atomic_write
 from monitoring import DEFAULT_SERVER, MonitorError, ServerMonitor
 from training_metrics import MetricHistory, source_key
+from experiment_discovery import normalize_run, draft_values
+from draft_import import stage_draft, load_draft
 
 
 def register_monitoring_routes(app, directory, get_db):
@@ -17,6 +19,7 @@ def register_monitoring_routes(app, directory, get_db):
     path = directory / 'monitor-server.json'
     with app.app_context():
         MetricHistory(get_db(), initialize=True)
+        get_db().execute('CREATE TABLE IF NOT EXISTS monitor_discoveries (identity TEXT PRIMARY KEY,draft_id TEXT NOT NULL)')
         get_db().commit()
 
     def experiment(identifier):
@@ -108,6 +111,63 @@ def register_monitoring_routes(app, directory, get_db):
         service().disconnect(token())
         session.pop('monitor_token', None)
         return jsonify(connected=False)
+
+    def matching_run(identity):
+        row = get_db().execute("SELECT id FROM entries WHERE kind='experiment' AND json_extract(metadata,'$.discovery_identity')=?", (identity,)).fetchone()
+        return row['id'] if row else None
+
+    @app.post('/api/monitor/discover')
+    def monitor_discover():
+        release_workspace()
+        try:
+            report = service().discover(token())
+            runs = []
+            for raw in report['runs']:
+                run = normalize_run(raw, report['server'])
+                run['entry_id'] = matching_run(run['identity'])
+                if run['entry_id']:
+                    run['monitor_url'] = url_for('monitor_page', experiment=run['entry_id'])
+                runs.append(run)
+            return jsonify(runs=runs)
+        except MonitorError as error:
+            return jsonify(error=str(error)), 400
+
+    @app.post('/api/monitor/autofill')
+    def monitor_autofill():
+        pid = request.form.get('pid', '')
+        if not pid.isdigit() or not 0 < int(pid) <= 2147483647:
+            return jsonify(error='请先选择识别出的训练进程。'), 400
+        release_workspace()
+        try:
+            report = service().discover(token(), pid)
+            if not report['runs']:
+                return jsonify(error='该训练进程已退出或无法读取，没有创建档案。'), 409
+            run = normalize_run(report['runs'][0], report['server'])
+            if run['identity'] != request.form.get('identity', ''):
+                return jsonify(error='进程身份已变化，请重新识别，避免关联到复用的 PID。'), 409
+            # Serialize only the short local dedup/staging phase, never SSH work.
+            app.extensions['git_workspace'].lock.acquire()
+            g.workspace_locked = True
+            existing = matching_run(run['identity'])
+            if existing:
+                return jsonify(review_url=url_for('monitor_page', experiment=existing), existing=True)
+            cached = get_db().execute('SELECT draft_id FROM monitor_discoveries WHERE identity=?', (run['identity'],)).fetchone()
+            if cached:
+                try:
+                    draft = load_draft(directory, cached['draft_id'])
+                    return jsonify(review_url=url_for('import_review', identifier=draft['id'], monitor=1))
+                except (OSError, ValueError):
+                    pass
+            metadata, content = draft_values(run, report['server'])
+            draft = stage_draft(directory, content, kind='experiment', title=run['title'], metadata=metadata,
+                                tags='服务器训练', source_name='训练参数自动识别')
+            get_db().execute('INSERT OR REPLACE INTO monitor_discoveries VALUES (?,?)', (run['identity'], draft['id']))
+            get_db().commit()
+            return jsonify(review_url=url_for('import_review', identifier=draft['id'], monitor=1))
+        except MonitorError as error:
+            return jsonify(error=str(error)), 400
+        except (OSError, ValueError):
+            return jsonify(error='自动填入草稿未保存，请检查本机目录后重试。'), 503
 
     @app.get('/monitor/experiments/<identifier>/metrics.csv')
     def monitor_metrics_export(identifier):

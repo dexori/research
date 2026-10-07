@@ -189,7 +189,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             except (SyncError, OSError) as error:
                 db().rollback()
                 workspace.error = str(error)
-            if request.method == "POST" and request.endpoint not in {"sync_configure", "sync_run", "sync_resolve", "github_login", "assistant_send", "codex_check", "learning_start", "monitor_connect", "monitor_snapshot", "monitor_disconnect"}:
+            if request.method == "POST" and request.endpoint not in {"sync_configure", "sync_run", "sync_resolve", "github_login", "assistant_send", "codex_check", "learning_start", "monitor_connect", "monitor_snapshot", "monitor_disconnect", "monitor_discover", "monitor_autofill"}:
                 if workspace.conflicts() or workspace.error:
                     abort(409, "同步资料需要检查。请先打开「GitHub 同步」处理冲突或附件缺失，再编辑记录。")
 
@@ -859,6 +859,8 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         meta = {field: request.form.get(field, "").strip() for field in fields}
         if kind == 'experiment':
             from monitoring import validate_log_path, MonitorError
+            origin = current['meta'] if current else checked_draft(import_id).get('metadata', {}) if import_id else {}
+            meta.update({key: origin[key] for key in ['discovery_identity', 'discovery_server', 'discovery_sources', 'discovery_time'] if key in origin})
             training_fields = ['objective', 'log_path', 'training_pid', 'total_steps', 'batch_size', 'learning_rate', 'epochs', 'gpu_ids']
             for field in training_fields:
                 meta[field] = str(request.form.get(field, current['meta'].get(field, '') if current else '') or '').strip()
@@ -1008,6 +1010,8 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             abort(400,'请选择有效的记录类型。')
         entry = {'title':draft['title'],'content':draft['content'],'status':'待开始',
                  'project_id':draft['project_id'],'tags':draft['tags'],'meta':draft.get('metadata', {})}
+        if kind == 'experiment' and entry['meta'].get('discovery_identity'):
+            entry['status'] = '进行中'
         if draft['project_id'] and not db().execute("SELECT 1 FROM entries WHERE id=? AND kind='project'",(draft['project_id'],)).fetchone():
             flash('草稿指定的项目在本机不存在，请重新选择关联项目。','error')
             entry['project_id'] = None

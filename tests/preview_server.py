@@ -56,6 +56,14 @@ with tempfile.TemporaryDirectory(prefix="research-browser-") as directory:
                 return config
             def disconnect(self, token):
                 self.sessions.pop(token, None)
+            def discover(self, token, pid=''):
+                return {'server': self.sessions[token], 'runs': [{'pid': '1234', 'identity': 'a'*64,
+                        'worker_count': 4, 'script': 'train_smolvla.py', 'cwd': '/tmp/isolated-project',
+                        'fields': {'model': 'SmolVLA（隔离测试）', 'dataset': 'LIBERO（隔离测试）',
+                                   'seed': '0', 'learning_rate': '1e-4', 'batch_size': '32',
+                                   'total_steps': '100', 'log_path': '/tmp/isolated-training.log'},
+                        'sources': {'model': '启动参数', 'learning_rate': '配置：/tmp/config.json'},
+                        'extras': {'contrastive_weight': '0.1'}}]}
             def snapshot(self, token, log_path=''):
                 from datetime import datetime, timezone
                 return {'server': self.sessions[token], 'updated_at': datetime.now(timezone.utc).isoformat(),

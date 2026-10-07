@@ -20,6 +20,7 @@
       <details class="monitor-help"><summary>换电脑 / 首次连接</summary><p class="small muted">先在该电脑终端 SSH 连接一次，核对服务器指纹并接受；监控不会自动信任未知主机。再在本页输入密码，或使用已配置的 SSH 密钥。</p><code>ssh -p {{ server.port }} {{ server.user }}@{{ server.host }}</code><p class="small muted">换电脑后独立连接同一服务器即可，不需要原电脑开机。需要联网，但不需要在服务器安装采集代理。</p></details>
     </section>
     <div class="monitor-main">
+      <section class="panel monitor-discovery"><div class="panel-heading"><h2>自动发现训练实验</h2><button type="button" class="button secondary" data-discover>重新识别</button></div><p class="small muted" data-discovery-status>连接后自动读取当前账号的训练进程、启动参数和关联配置，不执行训练代码。</p><div data-discovered-runs></div></section>
       <section class="panel monitor-run"><div class="panel-heading"><h2>实验档案</h2><a class="button secondary" href="{{ url_for('new',kind='experiment',monitor=1) }}">＋ 记录新实验</a></div>
         <form method="get" action="{{ url_for('monitor_page') }}" class="monitor-actions"><label class="sr-only" for="monitor-experiment">选择实验</label><select id="monitor-experiment" name="experiment"><option value="">只查看服务器，不记录曲线</option>{% for run in runs %}<option value="{{ run.id }}" {{ 'selected' if run.id==experiment }}>{{ run.title }}</option>{% endfor %}</select><button class="button secondary">切换实验</button></form>
         {% if selected_run %}<h3>{{ selected_run.title }}</h3><p class="muted">{{ selected_run.meta.get('objective') or '尚未填写实验目的，可点击编辑补充。' }}</p>

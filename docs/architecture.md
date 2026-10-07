@@ -11,8 +11,10 @@
 | `markdown_rendering.py` | Markdown/TeX 解析、安全过滤、本地图片链接 | 数据库、文件读写、网络请求 |
 | `media_routes.py` | 认证图片读取、编辑预览端点 | 外部图片抓取、任意路径读取 |
 | `monitoring.py` | 连接复用与只读 SSH 查询、内存凭据过期、GPU/进程快照、查询频率 | 训练启动/停止、服务器写入、凭据落盘、实验结论 |
+| `remote_training_probe.py` | 有界 `/proc` 探测、训练父子进程合并、允许字段的 CLI/JSON/YAML/日志启动配置读取 | 执行训练/配置代码、回传原始环境/命令、全盘扫描、推断默认值 |
+| `experiment_discovery.py` | 参数类型校验、服务器与启动身份去重、带来源的未保存实验草稿 | 自动保存正式记录、编造实验目的/结论、接触 SSH 密码 |
 | `training_metrics.py` | 有界增量日志、实际指标解析、按实验/来源/运行段保存 SQLite 历史与 CSV | SSH 登录、参数猜测、伪造曲线、自动标记成功 |
-| `monitoring_routes.py` | 认证/CSRF、选择实验、释放资料锁、历史与显式曲线附件归档 | SSH 命令拼接、自动覆盖笔记、Git 上传 |
+| `monitoring_routes.py` | 认证/CSRF、选择实验、发现/预填审核、短时本地去重锁、历史与显式曲线附件归档 | SSH 命令拼接、自动覆盖笔记、Git 上传 |
 | `research_images.py` | 静态图片验证、草稿资产、插图引用、请求意图 | 保存正式笔记、直接修改用户记录 |
 | `draft_import.py` | 待审核草稿格式、读取和原子写入 | 自动导入正式资料 |
 | `git_sync.py` | 正式 Markdown/附件与本机数据库恢复、同步、冲突 | 模型凭据、临时聊天和未审核草稿 |

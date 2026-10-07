@@ -143,6 +143,45 @@
       timer = setTimeout(refresh, delay);
     }
   }
+  async function discover() {
+    if (busy || !connected) return;
+    clearTimeout(timer); busy = true;
+    const button = find('[data-discover]'); button.disabled = true;
+    find('[data-discovery-status]').textContent = '正在只读识别训练进程、启动参数和关联配置…';
+    try {
+      const data = await request('/api/monitor/discover', new FormData());
+      const cards = data.runs.map(run => {
+        const card = node('div', undefined, 'discovered-run');
+        card.append(node('h3', run.title), node('p', `PID ${run.pid} · ${run.worker_count} 个已识别进程 · ${run.script}`));
+        const values = [['模型', run.fields.model], ['数据', run.fields.dataset], ['LR', run.fields.learning_rate], ['Batch', run.fields.batch_size], ['Steps', run.fields.total_steps], ['Seed', run.fields.seed]].filter(([, v]) => v);
+        const tags = node('div', undefined, 'tag-list'); values.forEach(([label, value]) => tags.append(node('span', `${label}：${value}`)));
+        card.append(tags, node('p', run.fields.log_path ? `日志：${run.fields.log_path}` : '日志路径暂未识别；如果输出是管道或没有落盘，可以稍后补充。'));
+        const details = node('details'); details.append(node('summary', '参数来源'));
+        Object.entries(run.sources).forEach(([key, source]) => details.append(node('p', `${key} · ${source}`)));
+        card.append(details);
+        if (run.entry_id) {
+          const link = node('a', '打开已有实验', 'button secondary'); link.href = run.monitor_url; card.append(link);
+        } else {
+          const action = node('button', '自动填入并审核', 'button primary'); action.type = 'button';
+          action.addEventListener('click', async () => {
+            if (busy) return;
+            clearTimeout(timer); busy = true; action.disabled = true;
+            notice('正在再次核对进程身份并生成预填档案…');
+            try {
+              const fields = new FormData(); fields.set('pid', run.pid); fields.set('identity', run.identity);
+              const reply = await request('/api/monitor/autofill', fields);
+              window.location.assign(reply.review_url);
+            } catch (error) { notice(error.message, true); busy = false; action.disabled = false; schedule(); }
+          });
+          card.append(action);
+        }
+        return card;
+      });
+      find('[data-discovered-runs]').replaceChildren(...cards);
+      find('[data-discovery-status]').textContent = data.runs.length ? `已发现 ${data.runs.length} 个候选训练任务。参数已读取，点击自动填入即可；实验目的和未知字段不会编造。` : '未识别到可读取的训练任务。支持常见 train/finetune 脚本、torchrun/accelerate/deepspeed；特殊入口可暂时手动建档。';
+    } catch (error) { find('[data-discovery-status]').textContent = error.message; }
+    finally { busy = false; button.disabled = false; schedule(); }
+  }
   async function refresh() {
     if (busy || !connected) return;
     clearTimeout(timer); busy = true; lastStart = performance.now(); state(connected);
@@ -169,7 +208,7 @@
       failures = 0; state(true); notice('服务器连接成功。');
     } catch (error) { notice(error.message, true); }
     finally { busy = false; button.disabled = false; state(connected); }
-    if (connected) refresh();
+    if (connected) { await refresh(); await discover(); }
   });
   find('[data-disconnect]').addEventListener('click', async () => {
     if (busy) return;
@@ -181,6 +220,7 @@
     finally { busy = false; state(connected); schedule(); }
   });
   find('[data-refresh]').addEventListener('click', () => { failures = 0; refresh(); });
+  find('[data-discover]').addEventListener('click', discover);
   find('[data-log-form]').addEventListener('submit', event => {
     event.preventDefault(); currentLog = logInput.value.trim(); failures = 0;
     if (!connected) notice('请先连接服务器，再读取日志。', true); else refresh();
@@ -196,5 +236,5 @@
       notice('已恢复本地曲线历史，等待服务器的新数据；此时不是实时快照。');
     }
   } catch { notice('本地历史暂时无法读取，请刷新页面。', true); }
-  if (connected) refresh();
+  if (connected) (async () => { await refresh(); await discover(); })();
 })();

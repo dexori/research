@@ -4,8 +4,9 @@ from __future__ import annotations
 import csv
 from datetime import datetime, timezone
 import io
+import json
 import math
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 import re
 import secrets
 import shlex
@@ -180,6 +181,50 @@ class ServerMonitor:
         finally:
             channel.close()
 
+    def _connected_client(self, item):
+        client = item['client']
+        transport = client.get_transport()
+        if not transport or not transport.is_active():
+            client.close()
+            client = self._client(item['config'], item['password'])
+            item['client'] = client
+            transport = client.get_transport()
+            if transport:
+                transport.set_keepalive(20)
+        return client
+
+    def discover(self, token, pid=''):
+        if pid and (not str(pid).isdigit() or not 0 < int(pid) <= 2147483647):
+            raise MonitorError('训练 PID 无效。')
+        with self._lock:
+            self._prune()
+            item = self._sessions.get(token)
+        if not item:
+            raise MonitorError('请先连接训练服务器。')
+        if not item['lock'].acquire(blocking=False):
+            raise MonitorError('正在读取服务器，请稍后重试自动识别。')
+        try:
+            code = Path(__file__).with_name('remote_training_probe.py').read_text()
+            command = 'python3 -I -c ' + shlex.quote(code)
+            if pid:
+                command += ' ' + str(int(pid))
+            raw, status = self._command(self._connected_client(item), command)
+            if status:
+                raise MonitorError('自动识别未完成，请检查服务器 python3 和进程访问权限。')
+            result = json.loads(raw)
+            if not isinstance(result, dict) or not isinstance(result.get('runs'), list) or len(result['runs']) > 20:
+                raise ValueError()
+            return {'server': dict(item['config']), 'runs': result['runs']}
+        except MonitorError:
+            raise
+        except (ValueError, OSError, TypeError):
+            raise MonitorError('自动识别结果无法读取，未创建实验记录。') from None
+        except Exception as error:
+            item['client'].close()
+            raise self._error(error) from None
+        finally:
+            item['lock'].release()
+
     @staticmethod
     def _log(client, path):
         with client.open_sftp() as sftp:
@@ -208,15 +253,7 @@ class ServerMonitor:
             raise MonitorError('正在读取服务器，请稍后刷新。')
         try:
             started = self.clock()
-            client = item['client']
-            transport = client.get_transport()
-            if not transport or not transport.is_active():
-                client.close()
-                client = self._client(item['config'], item['password'])
-                item['client'] = client
-                transport = client.get_transport()
-                if transport:
-                    transport.set_keepalive(20)
+            client = self._connected_client(item)
             warnings = []
             gpu_text, gpu_status = self._command(client, GPU_COMMAND)
             if gpu_status:
