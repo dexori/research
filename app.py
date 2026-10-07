@@ -487,7 +487,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
     app.jinja_env.filters["markdown"] = render_md
 
     register_media_routes(app, directory, db)
-    register_monitoring_routes(app, directory)
+    register_monitoring_routes(app, directory, db)
 
     @app.get('/diagrams/renderer')
     def diagram_renderer():
@@ -857,6 +857,28 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         tags = ", ".join(tag.strip() for tag in request.form.get("tags", "").replace("，", ",").split(",") if tag.strip())[:1000]
         fields = ["authors", "year", "url", "bibtex", "model", "dataset", "seed", "metric_name", "metric_value", "params", "code_version", "location", "data_version", "external_url"]
         meta = {field: request.form.get(field, "").strip() for field in fields}
+        if kind == 'experiment':
+            from monitoring import validate_log_path, MonitorError
+            training_fields = ['objective', 'log_path', 'training_pid', 'total_steps', 'batch_size', 'learning_rate', 'epochs', 'gpu_ids']
+            for field in training_fields:
+                meta[field] = str(request.form.get(field, current['meta'].get(field, '') if current else '') or '').strip()
+                if len(meta[field]) > (2000 if field == 'objective' else 1024):
+                    raise ValueError('训练信息过长，请缩短后保存。')
+            try:
+                meta['log_path'] = validate_log_path(meta['log_path'])
+            except MonitorError as error:
+                raise ValueError(str(error)) from None
+            for field in ['training_pid', 'total_steps', 'batch_size']:
+                if meta[field] and (not meta[field].isdigit() or not 0 < int(meta[field]) <= 10**12):
+                    raise ValueError('PID、计划步数和 batch size 须为正整数。')
+            for field in ['learning_rate', 'epochs']:
+                if meta[field]:
+                    try:
+                        value = float(meta[field])
+                        if not __import__('math').isfinite(value) or value <= 0:
+                            raise ValueError()
+                    except ValueError:
+                        raise ValueError('初始学习率和计划 epoch 须为正的有限数字。') from None
         if kind == 'knowledge':
             category = request.form.get('knowledge_category', '其他')
             if category not in KNOWLEDGE_CATEGORIES:
@@ -1079,6 +1101,8 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             try:
                 identifier = save_entry(kind,import_id=import_id)
                 flash("已保存到本机。换电脑前，请在「GitHub 同步」上传最新资料。", "success")
+                if kind == 'experiment' and request.form.get('return_monitor') == '1':
+                    return redirect(url_for('monitor_page', experiment=identifier))
                 return redirect(url_for("detail", identifier=identifier))
             except ValueError as error:
                 db().rollback()
@@ -1102,6 +1126,8 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             try:
                 save_entry(entry["kind"], entry,import_id=import_id)
                 flash("修改已保存到本机。换电脑前，请同步到 GitHub。", "success")
+                if entry['kind'] == 'experiment' and request.form.get('return_monitor') == '1':
+                    return redirect(url_for('monitor_page', experiment=identifier))
                 return redirect(url_for("detail", identifier=identifier))
             except ValueError as error:
                 db().rollback()

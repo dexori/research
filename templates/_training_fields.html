@@ -1,0 +1,5 @@
+<fieldset class="training-fields"><legend>训练档案与实时监控</legend>
+<label for="objective">这次实验要验证什么？</label><textarea id="objective" name="objective" rows="2" maxlength="2000" placeholder="例如：比较 baseline 与 DTW 辅助损失对 LIBERO 成功率的影响">{{ entry.meta.get('objective','') }}</textarea>
+<div class="field-grid">{% for key,label,placeholder in [('total_steps','计划训练步数','70000'),('learning_rate','初始学习率','1e-4'),('batch_size','Batch size','32'),('epochs','计划 epoch',''),('training_pid','训练主进程 PID','可选，关联进程'),('gpu_ids','使用的 GPU','0, 1, 2, 4')] %}<div><label for="{{ key }}">{{ label }}</label><input id="{{ key }}" name="{{ key }}" value="{{ entry.meta.get(key,'') }}" placeholder="{{ placeholder }}" maxlength="1024"></div>{% endfor %}</div>
+<label for="log_path">服务器训练日志绝对路径</label><input id="log_path" name="log_path" value="{{ entry.meta.get('log_path','') }}" placeholder="/home/zdx/outputs/run01/train.log" maxlength="1024">
+<p class="small muted">这些参数是实验配置记录，不会改变服务器训练。选择该实验后自动关联日志，进度与动态学习率以实际日志为准。</p></fieldset>

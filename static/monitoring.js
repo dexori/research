@@ -8,7 +8,8 @@
   const password = find('[name=password]');
   const logInput = find('[name=log_path]');
   let connected = root.dataset.connected === '1', busy = false, timer;
-  let currentLog = '', failures = 0;
+  let currentLog = logInput.value.trim(), failures = 0, lastStart = 0;
+  let points = [], segment = 0, previewPath = currentLog;
   const node = (tag, text, cls) => {
     const el = document.createElement(tag);
     if (text !== undefined) el.textContent = String(text);
@@ -47,14 +48,14 @@
       throw error;
     } finally { clearTimeout(timeout); }
   }
-  function chart(points) {
-    const section = find('[data-metrics]');
-    section.hidden = !points.length;
-    if (!points.length) return;
-    const canvas = find('[data-loss-chart]'), ctx = canvas.getContext('2d');
+  function chart(allPoints, key, selector, emptySelector) {
+    const points = allPoints.filter(p => Number.isFinite(p[key]));
+    const canvas = find(selector), ctx = canvas.getContext('2d');
     const width = canvas.width, height = canvas.height;
     ctx.clearRect(0, 0, width, height);
-    const steps = points.map(p => p.step), losses = points.map(p => p.loss);
+    canvas.hidden = !points.length; find(emptySelector).hidden = !!points.length;
+    if (!points.length) return;
+    const steps = points.map(p => p.step), losses = points.map(p => p[key]);
     const xmin = Math.min(...steps), xmax = Math.max(...steps), ymin = Math.min(...losses), ymax = Math.max(...losses);
     const x = value => 60 + (value - xmin) / (xmax - xmin || 1) * (width - 90);
     const y = value => height - 36 - (value - ymin) / (ymax - ymin || 1) * (height - 62);
@@ -65,17 +66,46 @@
     ctx.fillText(String(xmin), 60, height - 10); ctx.fillText(String(xmax), width - 80, height - 10);
     ctx.strokeStyle = '#267b68'; ctx.lineWidth = 2; ctx.beginPath();
     points.forEach((p, i) => {
-      if (!i || p.step < points[i - 1].step) ctx.moveTo(x(p.step), y(p.loss));
-      else ctx.lineTo(x(p.step), y(p.loss));
+      if (!i || p.step < points[i - 1].step) ctx.moveTo(x(p.step), y(p[key]));
+      else ctx.lineTo(x(p.step), y(p[key]));
     }); ctx.stroke();
     ctx.fillStyle = '#267b68';
-    points.forEach(p => { ctx.beginPath(); ctx.arc(x(p.step), y(p.loss), 3, 0, Math.PI * 2); ctx.fill(); });
-    const last = points.at(-1);
-    find('[data-metric-caption]').textContent = `${points.length} 条明确的 step/loss 记录；最新 step ${last.step}，loss ${last.loss}。仅来自当前日志片段，不代表完整训练历史。`;
+    if (points.length < 100) points.forEach(p => { ctx.beginPath(); ctx.arc(x(p.step), y(p[key]), 3, 0, Math.PI * 2); ctx.fill(); });
+  }
+  function training(data) {
+    if (data.history) { points = data.history.points; segment = data.history.segment; }
+    else {
+      if (data.history_reset || previewPath !== data.log_path) points = [];
+      previewPath = data.log_path;
+      for (const p of data.metrics || []) {
+        if (points.length && p.step < points.at(-1).step) points = [];
+        const old = points.find(q => q.step === p.step);
+        if (old) Object.assign(old, p); else points.push(p);
+      }
+      points = points.slice(-2000);
+    }
+    chart(points, 'loss', '[data-loss-chart]', '[data-loss-empty]');
+    chart(points, 'lr', '[data-lr-chart]', '[data-lr-empty]');
+    const latest = points.at(-1), step = latest?.step;
+    const total = Number(root.dataset.total);
+    const epochs = Number(root.dataset.epochs);
+    find('[data-current-step]').textContent = `Step：${Number.isFinite(step) ? `${latest.approximate ? '≈' : ''}${step}` : '—'}`;
+    find('[data-current-loss]').textContent = `Loss：${display(latest?.loss)}`;
+    find('[data-current-lr]').textContent = `学习率：${display(latest?.lr)}`;
+    const byStep = Number.isFinite(step) && total > 0;
+    const byEpoch = !byStep && Number.isFinite(latest?.epoch) && epochs > 0;
+    const percent = byStep ? Math.min(100, step / total * 100) : byEpoch ? Math.min(100, latest.epoch / epochs * 100) : null;
+    find('[data-training-progress]').textContent = percent === null ? (latest ? `${step} steps` : '—') : `${percent.toFixed(1)}% · ${byEpoch ? `${latest.epoch} / ${epochs} epochs` : `${step} / ${total}`}`;
+    find('[data-training-bar]').value = percent ?? 0;
+    find('[data-progress-note]').textContent = byEpoch ? '按日志 epoch / 已记录计划 epoch 计算；不是训练完成或成功判定。' : total > 0 ? '按日志 step / 已记录计划步数计算；达到计划步数不等于实验成功。' : '尚未填写计划步数，只显示实际 step；在实验档案中补充即可显示百分比。';
+    if (latest?.approximate) find('[data-progress-note]').textContent += ' 日志使用 K/M/B 简写，step 与百分比为近似值；未恢复被日志舍入的精度。';
+    const pid = root.dataset.pid;
+    if (data.processes) find('[data-run-status]').textContent = pid ? (data.processes.some(p => p.pid === pid) ? `关联 PID ${pid} 正在运行` : `未检测到 PID ${pid}，请核对日志，不代表完成`) : '未绑定 PID · 状态以日志为准';
+    find('[data-metric-caption]').textContent = points.length ? `${points.length} 条已采集指标 · ${data.history ? `本地历史，运行段 ${segment + 1}` : '当前会话预览，未写入实验历史'}。曲线只来自实际日志；最多显示最近 2,000 个点，不保证覆盖接入前全部历史。` : '等待明确的 step/loss/lr 记录；不会生成模拟曲线。';
   }
   function render(data) {
     find('[data-server-title]').textContent = `${data.server.name} · ${data.server.host}:${data.server.port}`;
-    find('[data-updated]').textContent = `更新于 ${new Date(data.updated_at).toLocaleTimeString()} · ${data.uptime || '系统负载不可用'}`;
+    find('[data-updated]').textContent = `更新于 ${new Date(data.updated_at).toLocaleTimeString()}${Number.isFinite(data.latency_ms) ? ` · 查询 ${data.latency_ms} ms` : ''} · 进程信息约每 5 秒更新`;
     find('[data-warnings]').replaceChildren(...data.warnings.map(w => node('p', w)));
     const cards = data.gpus.map(gpu => {
       const card = node('div', undefined, 'monitor-gpu');
@@ -89,32 +119,42 @@
     find('[data-gpus]').replaceChildren(...(cards.length ? cards : [node('p', '未检测到可读取的 GPU。', 'muted')]));
     const rows = data.processes.map(process => {
       const row = node('tr');
+      if (root.dataset.pid && process.pid === root.dataset.pid) row.classList.add('is-associated');
       const duration = Number.isFinite(process.seconds) ? `${Math.floor(process.seconds / 3600)}h ${Math.floor(process.seconds % 3600 / 60)}m` : '—';
       [process.pid, duration, display(process.cpu, '%'), display(process.memory, '%'), process.command].forEach(v => row.append(node('td', v)));
       return row;
     });
     if (!rows.length) { const row = node('tr'), cell = node('td', '未发现当前用户的训练类进程。', 'muted'); cell.colSpan = 5; row.append(cell); rows.push(row); }
     find('[data-processes]').replaceChildren(...rows);
-    find('[data-log]').textContent = data.log || (data.log_path ? '日志暂无内容或无法读取，请查看上方提示。' : '尚未指定日志路径');
+    const log = find('[data-log]');
+    const logText = data.log || (data.log_path ? '日志暂无内容或无法读取，请查看上方提示。' : '尚未指定日志路径');
+    if (log.textContent !== logText) {
+      const follow = log.scrollTop + log.clientHeight >= log.scrollHeight - 24;
+      log.textContent = logText;
+      if (follow) log.scrollTop = log.scrollHeight;
+    }
     find('[data-log-description]').textContent = data.log_path ? `${data.log_path}${data.truncated ? ' · 仅展示末尾片段' : ''}` : '输入训练输出的日志路径；未指定时不会扫描服务器文件。';
-    chart(data.metrics);
+    training(data);
   }
   function schedule() {
     clearTimeout(timer);
-    if (connected && auto.checked && !document.hidden && failures < 3) timer = setTimeout(refresh, 15000);
+    if (connected && auto.checked && !document.hidden) {
+      const delay = failures ? Math.min(15000, 1000 * 2 ** Math.min(failures, 4)) : Math.max(150, 1000 - (performance.now() - lastStart));
+      timer = setTimeout(refresh, delay);
+    }
   }
   async function refresh() {
     if (busy || !connected) return;
-    clearTimeout(timer); busy = true; state(connected);
-    notice('正在读取服务器快照…');
+    clearTimeout(timer); busy = true; lastStart = performance.now(); state(connected);
     try {
       const fields = new FormData(); fields.set('log_path', currentLog);
+      fields.set('experiment', root.dataset.experiment);
       const data = await request('/api/monitor/server', fields);
       render(data); failures = 0;
-      notice('只读监控已更新；不会修改训练或自动保存实验结论。');
+      notice(`实时监控已更新${data.history ? '，曲线已记录到该实验的本地历史' : ''}；不会修改训练或自动填写实验结论。`);
     } catch (error) {
       failures++;
-      notice(`${error.message} 当前显示的可能是旧快照。${failures >= 3 ? '连续查询失败，自动刷新已暂停；点击刷新重试。' : ''}`, true);
+      notice(`${error.message} 当前显示的可能是旧快照；连接仍有效时会自动重试。`, true);
     } finally { busy = false; state(connected); schedule(); }
   }
   find('[data-connect-form]').addEventListener('submit', async event => {
@@ -149,5 +189,12 @@
   document.addEventListener('visibilitychange', () => { if (document.hidden) clearTimeout(timer); else schedule(); });
   window.addEventListener('pagehide', () => clearTimeout(timer));
   state(connected);
+  try {
+    const history = JSON.parse(root.dataset.history || 'null');
+    if (history) {
+      training({history});
+      notice('已恢复本地曲线历史，等待服务器的新数据；此时不是实时快照。');
+    }
+  } catch { notice('本地历史暂时无法读取，请刷新页面。', true); }
   if (connected) refresh();
 })();

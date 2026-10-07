@@ -64,9 +64,9 @@ with tempfile.TemporaryDirectory(prefix="research-browser-") as directory:
                         'processes': [{'pid': '1234', 'seconds': 7200, 'cpu': 90, 'memory': 5,
                                        'command': 'python train.py --seed 0 <script>not executed</script>'}],
                         'uptime': '隔离测试：load average 2.0', 'warnings': [], 'log_path': log_path,
-                        'log': 'step=1 loss=0.3\nstep=2 loss=0.2\n<script>not executed</script>' if log_path else '',
+                        'log': 'step=1 loss=0.3 lr=1e-4\nstep=2 loss=0.2 lr=8e-5\n<script>not executed</script>' if log_path else '',
                         'truncated': bool(log_path),
-                        'metrics': [{'step': 1, 'loss': .3}, {'step': 2, 'loss': .2}] if log_path else []}
+                        'metrics': [{'step': 1, 'loss': .3, 'lr': .0001}, {'step': 2, 'loss': .2, 'lr': .00008}] if log_path else []}
         app.extensions['server_monitor'] = PreviewMonitor()
         app.extensions['codex_bridge'] = PreviewCodex()
         class PreviewLearning:

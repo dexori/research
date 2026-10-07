@@ -18,6 +18,8 @@ class FakeClient:
         self.closed = False
         self.params = None
         self.policy = None
+        self.transport = Mock()
+        self.transport.is_active.side_effect = lambda: not self.closed and self.params is not None
     def load_system_host_keys(self):
         pass
     def set_missing_host_key_policy(self, policy):
@@ -26,6 +28,8 @@ class FakeClient:
         self.params = params
     def close(self):
         self.closed = True
+    def get_transport(self):
+        return self.transport
 
 
 class MonitorUnitTest(unittest.TestCase):
@@ -54,11 +58,12 @@ class MonitorUnitTest(unittest.TestCase):
         self.assertIsInstance(clients[0].policy, paramiko.RejectPolicy)
         self.assertFalse(clients[0].params['allow_agent'])
         self.assertEqual(clients[0].params['password'], 'isolated-secret')
-        self.assertTrue(clients[0].closed)
+        self.assertFalse(clients[0].closed)
         self.assertNotIn('password', service.state('one'))
         self.assertIsNone(service.state('other'))
         now[0] = 28801
         self.assertIsNone(service.state('one'))
+        self.assertTrue(clients[0].closed)
         self.assertEqual(service._sessions, {})
         service.connect('one', DEFAULT_SERVER)
         self.assertTrue(clients[-1].params['allow_agent'])
@@ -81,7 +86,10 @@ class MonitorUnitTest(unittest.TestCase):
         service.connect('a', DEFAULT_SERVER, 'isolated-secret')
         service._command = Mock(side_effect=[('0, GPU, 90, 100, 1000, 60, 30', 0),
                                              ('100 3600 98 5 python python train.py\n1 100 0 0 sh sh', 0), ('up 1 day', 0)])
-        service._log = Mock(return_value=('step=1 loss=0.25', False))
+        reader = Mock()
+        reader.read.return_value = {'log': 'step=1 loss=0.25', 'truncated': False,
+                                  'metrics': [{'step': 1, 'loss': .25}], 'reset': False, 'history_limited': False}
+        service._sessions['a']['log_readers']["/tmp/run ';whoami;.log"] = reader
         result = service.snapshot('a', "/tmp/run ';whoami;.log")
         self.assertEqual(len(result['processes']), 1)
         self.assertEqual(result['metrics'], [{'step': 1, 'loss': .25}])

@@ -13,6 +13,7 @@ import socket
 import stat
 import threading
 import time
+from training_metrics import LogReader, parse_metrics
 
 import paramiko
 
@@ -73,17 +74,6 @@ def parse_gpus(text):
     return result[:32]
 
 
-def parse_metrics(text):
-    """Display explicit step/loss values only, never invent a training curve."""
-    points = []
-    for line in text.splitlines():
-        step = re.search(r'''\b(?:global[_ ]step|step|steps|iteration|iter)["']?\s*[:=]\s*(\d+)''', line, re.I)
-        loss = re.search(r'''\b(?:train[/_])?loss["']?\s*[:=]\s*(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)''', line, re.I)
-        if step and loss and number(loss[1]) is not None:
-            points.append({'step': int(step[1]), 'loss': float(loss[1])})
-    return points[-100:]
-
-
 class ServerMonitor:
     def __init__(self, client_factory=None, clock=time.monotonic):
         self.client_factory = client_factory or paramiko.SSHClient
@@ -122,12 +112,15 @@ class ServerMonitor:
             raise MonitorError('密码格式不正确。')
         try:
             client = self._client(config, password)
-            client.close()
+            transport = client.get_transport()
+            if transport:
+                transport.set_keepalive(20)
         except Exception as error:
             raise self._error(error) from None
         with self._lock:
             self._prune()
             if len(self._sessions) >= 8 and token not in self._sessions:
+                client.close()
                 raise MonitorError('监控会话较多，请断开其他页面后重试。')
             self.disconnect(token)
             nonce = secrets.token_hex(16)
@@ -135,7 +128,8 @@ class ServerMonitor:
             timer.daemon = True
             self._sessions[token] = {'config': config, 'password': password,
                                      'expires': self.clock() + TTL, 'lock': threading.Lock(),
-                                     'nonce': nonce, 'timer': timer}
+                                     'nonce': nonce, 'timer': timer, 'client': client,
+                                     'cache': {}, 'log_readers': {}}
             timer.start()
         return config
 
@@ -160,6 +154,7 @@ class ServerMonitor:
             item = self._sessions.pop(token, None)
             if item:
                 item['timer'].cancel()
+                item['client'].close()
 
     def _command(self, client, command):
         stdin, stdout, stderr = client.exec_command(command, timeout=8)
@@ -211,15 +206,27 @@ class ServerMonitor:
             raise MonitorError('监控未连接或已过期，请重新登录服务器。')
         if not item['lock'].acquire(blocking=False):
             raise MonitorError('正在读取服务器，请稍后刷新。')
-        client = None
         try:
-            client = self._client(item['config'], item['password'])
+            started = self.clock()
+            client = item['client']
+            transport = client.get_transport()
+            if not transport or not transport.is_active():
+                client.close()
+                client = self._client(item['config'], item['password'])
+                item['client'] = client
+                transport = client.get_transport()
+                if transport:
+                    transport.set_keepalive(20)
             warnings = []
             gpu_text, gpu_status = self._command(client, GPU_COMMAND)
             if gpu_status:
                 warnings.append('GPU 查询不可用，请检查驱动或 nvidia-smi。')
             command = 'ps -u ' + shlex.quote(item['config']['user']) + ' -o pid=,etimes=,pcpu=,pmem=,comm=,args= --sort=-pcpu'
-            ps_text, ps_status = self._command(client, command)
+            cache = item['cache']
+            if 'ps' not in cache or self.clock() - cache['ps_at'] >= 5:
+                cache['ps'] = self._command(client, command)
+                cache['ps_at'] = self.clock()
+            ps_text, ps_status = cache['ps']
             processes = []
             for line in ps_text.splitlines():
                 values = line.strip().split(None, 5)
@@ -228,22 +235,36 @@ class ServerMonitor:
                                       'memory': number(values[3]), 'command': values[5][:1200]})
             if ps_status:
                 warnings.append('用户进程查询不可用。')
-            uptime, _ = self._command(client, 'uptime')
+            if 'uptime' not in cache or self.clock() - cache['uptime_at'] >= 30:
+                cache['uptime'] = self._command(client, 'uptime')[0]
+                cache['uptime_at'] = self.clock()
+            uptime = cache['uptime']
             log, truncated = '', False
+            points, reset, limited = [], False, False
             if path:
                 try:
-                    log, truncated = self._log(client, path)
-                except (OSError, MonitorError):
+                    if path not in item['log_readers']:
+                        if len(item['log_readers']) >= 8:
+                            item['log_readers'].pop(next(iter(item['log_readers'])))
+                        item['log_readers'][path] = LogReader()
+                    reading = item['log_readers'][path].read(client, path)
+                    log, truncated, points = reading['log'], reading['truncated'], reading['metrics']
+                    reset, limited = reading['reset'], reading['history_limited']
+                    if limited:
+                        warnings.append('日志较大，本次仅回读末尾 2 MB；更早的曲线未采集。')
+                except (OSError, ValueError, MonitorError):
                     warnings.append('日志无法读取，请检查路径、文件类型和权限。')
             return {'server': dict(item['config']), 'updated_at': datetime.now(timezone.utc).isoformat(),
                     'gpus': parse_gpus(gpu_text) if not gpu_status else [], 'processes': processes[:80],
                     'uptime': uptime.strip()[:500], 'log': log, 'log_path': path,
-                    'truncated': truncated, 'metrics': parse_metrics(log), 'warnings': warnings}
+                    'truncated': truncated, 'metrics': points, 'history_reset': reset,
+                    'history_limited': limited, 'warnings': warnings,
+                    'latency_ms': round((self.clock() - started) * 1000),
+                    'process_age_seconds': round(self.clock() - cache['ps_at'], 1)}
         except MonitorError:
             raise
         except Exception as error:
+            item['client'].close()
             raise self._error(error) from None
         finally:
-            if client:
-                client.close()
             item['lock'].release()
