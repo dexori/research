@@ -27,6 +27,7 @@ from codex_bridge import CodexBridge, BridgeError, retrieve_notes, validate_sele
 from draft_import import MAX_BYTES as DRAFT_BYTES, SUFFIXES, decode_text, stage_draft, load_draft, list_drafts
 from markdown_rendering import render_md
 from media_routes import register_media_routes
+from monitoring_routes import register_monitoring_routes
 from assistant_workflow import ChatTurn, generate_chat_reply
 from paper_reader import PaperReader, PaperError
 from learning import CATEGORIES as KNOWLEDGE_CATEGORIES, prepare_card, PublicLearningSearch
@@ -188,7 +189,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             except (SyncError, OSError) as error:
                 db().rollback()
                 workspace.error = str(error)
-            if request.method == "POST" and request.endpoint not in {"sync_configure", "sync_run", "sync_resolve", "github_login", "assistant_send", "codex_check", "learning_start"}:
+            if request.method == "POST" and request.endpoint not in {"sync_configure", "sync_run", "sync_resolve", "github_login", "assistant_send", "codex_check", "learning_start", "monitor_connect", "monitor_snapshot", "monitor_disconnect"}:
                 if workspace.conflicts() or workspace.error:
                     abort(409, "同步资料需要检查。请先打开「GitHub 同步」处理冲突或附件缺失，再编辑记录。")
 
@@ -486,6 +487,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
     app.jinja_env.filters["markdown"] = render_md
 
     register_media_routes(app, directory, db)
+    register_monitoring_routes(app, directory)
 
     @app.get('/diagrams/renderer')
     def diagram_renderer():
@@ -787,6 +789,9 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
 
     @app.post("/logout")
     def logout():
+        monitor_token = session.get('monitor_token')
+        if monitor_token:
+            app.extensions['server_monitor'].disconnect(monitor_token + ':' + str(session.get('auth_version', '')))
         session.clear()
         return redirect(url_for("login"))
 

@@ -44,6 +44,30 @@ with tempfile.TemporaryDirectory(prefix="research-browser-") as directory:
     print('Browser fixture data: '+directory,flush=True)
     app = create_app(directory, testing=True)
     if args.fake_codex:
+        class PreviewMonitor:
+            def __init__(self):
+                self.sessions = {}
+            def state(self, token):
+                return self.sessions.get(token)
+            def connect(self, token, fields, password=''):
+                from monitoring import validate_server
+                config = validate_server(fields)
+                self.sessions[token] = config
+                return config
+            def disconnect(self, token):
+                self.sessions.pop(token, None)
+            def snapshot(self, token, log_path=''):
+                from datetime import datetime, timezone
+                return {'server': self.sessions[token], 'updated_at': datetime.now(timezone.utc).isoformat(),
+                        'gpus': [{'index': str(i), 'name': 'A100（隔离测试）', 'utilization': 90,
+                                  'used': 20830, 'total': 81920, 'temperature': 65, 'power': 200} for i in range(8)],
+                        'processes': [{'pid': '1234', 'seconds': 7200, 'cpu': 90, 'memory': 5,
+                                       'command': 'python train.py --seed 0 <script>not executed</script>'}],
+                        'uptime': '隔离测试：load average 2.0', 'warnings': [], 'log_path': log_path,
+                        'log': 'step=1 loss=0.3\nstep=2 loss=0.2\n<script>not executed</script>' if log_path else '',
+                        'truncated': bool(log_path),
+                        'metrics': [{'step': 1, 'loss': .3}, {'step': 2, 'loss': .2}] if log_path else []}
+        app.extensions['server_monitor'] = PreviewMonitor()
         app.extensions['codex_bridge'] = PreviewCodex()
         class PreviewLearning:
             def research(self,topic,bridge,on_progress=None,**selection):

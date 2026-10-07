@@ -1,0 +1,37 @@
+{% extends 'base.html' %}
+{% block title %}训练监控 · {{ app_name }}{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="{{ url_for('static',filename='monitoring.css') }}">
+<script defer src="{{ url_for('static',filename='monitoring.js') }}"></script>
+<div class="page-heading"><div><div class="eyebrow">EXPERIMENT OBSERVATORY</div><h1>训练监控</h1><p class="muted">查看训练现场，让实验记录与服务器进度连接起来。</p></div><span class="monitor-badge" data-connection>{{ '已连接' if connected else '未连接' }}</span></div>
+<div id="monitor" data-connected="{{ '1' if connected else '0' }}" data-csrf="{{ csrf() }}">
+  <div class="notice" role="status" data-monitor-status>连接后只读查询；不会启动、停止或修改服务器训练。</div>
+  <div class="monitor-layout">
+    <section class="panel monitor-settings"><h2>服务器连接</h2>
+      <form data-connect-form method="post" action="{{ url_for('monitor_connect') }}">
+        <input type="hidden" name="csrf" value="{{ csrf() }}">
+        <label for="server-name">名称</label><input id="server-name" name="name" value="{{ server.name }}" maxlength="80" required>
+        <label for="server-host">SSH 地址</label><input id="server-host" name="host" value="{{ server.host }}" required autocomplete="off">
+        <div class="field-grid"><div><label for="server-port">端口</label><input id="server-port" name="port" value="{{ server.port }}" type="number" min="1" max="65535" required></div><div><label for="server-user">用户名</label><input id="server-user" name="user" value="{{ server.user }}" required autocomplete="username"></div></div>
+        <label for="server-password">SSH 密码</label><input id="server-password" name="password" type="password" autocomplete="off" maxlength="1024" placeholder="留空使用本机 SSH 密钥">
+        <p class="small muted">密码只在本机内存中保留最多 8 小时，不保存到文件或 GitHub。平台重启、会话过期或断开后需重新连接。</p>
+        <div class="monitor-actions"><button class="button primary" type="submit">连接服务器</button><button class="button secondary" type="button" data-disconnect>断开</button></div>
+      </form>
+      <details class="monitor-help"><summary>换电脑 / 首次连接</summary><p class="small muted">先在该电脑终端 SSH 连接一次，核对服务器指纹并接受；监控不会自动信任未知主机。再在本页输入密码，或使用已配置的 SSH 密钥。</p><code>ssh -p {{ server.port }} {{ server.user }}@{{ server.host }}</code><p class="small muted">换电脑后独立连接同一服务器即可，不需要原电脑开机。需要联网，但不需要在服务器安装采集代理。</p></details>
+    </section>
+    <div class="monitor-main">
+      <section class="panel monitor-toolbar"><div><h2 data-server-title>{{ server.name }}</h2><p class="small muted" data-updated>尚未读取服务器状态</p></div><div class="monitor-actions"><label class="check-label"><input type="checkbox" data-auto-refresh checked>每 15 秒刷新</label><button type="button" class="button secondary" data-refresh>刷新</button></div></section>
+      <div class="monitor-warnings" role="status" data-warnings></div>
+      <section class="panel"><div class="panel-heading"><h2>GPU 使用情况</h2><span class="small muted">实时快照</span></div><div class="monitor-gpus" data-gpus><p class="muted">连接后显示显存、利用率和温度。</p></div></section>
+      <section class="panel"><div class="panel-heading"><h2>训练进程</h2><span class="small muted">当前 SSH 用户</span></div><div class="monitor-table-wrap"><table class="monitor-table"><thead><tr><th>PID</th><th>运行时长</th><th>CPU</th><th>内存</th><th>启动命令</th></tr></thead><tbody data-processes><tr><td colspan="5" class="muted">尚未读取</td></tr></tbody></table></div><p class="small muted">展示 Python / torchrun / accelerate 等进程，不把“没有进程”判断为实验成功。</p></section>
+      <section class="panel"><div class="panel-heading"><h2>实验日志</h2><span class="small muted">最新 250 行 · 最多 64 KB</span></div>
+        <form data-log-form class="monitor-log-form"><label for="monitor-log">服务器日志绝对路径</label><div class="monitor-actions"><input id="monitor-log" name="log_path" maxlength="1024" placeholder="例如 /home/zdx/outputs/run01/train.log" autocomplete="off"><button class="button secondary" type="submit">读取日志</button></div></form>
+        <p class="small muted" data-log-description>输入训练输出的日志路径；未指定时不会扫描服务器文件。</p>
+        <div class="monitor-metrics" hidden data-metrics><h3>训练 loss · 日志片段</h3><canvas width="960" height="220" data-loss-chart aria-label="日志中明确记录的 step 与 loss 曲线"></canvas><p class="small muted" data-metric-caption></p></div>
+        <pre class="monitor-log" data-log aria-live="off">尚未读取日志</pre>
+      </section>
+      {% if experiment %}<p class="small muted">监控仅展示，不自动覆盖实验记录。<a class="text-link" href="{{ url_for('detail',identifier=experiment) }}">返回实验记录</a></p>{% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

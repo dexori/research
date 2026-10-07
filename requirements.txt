@@ -7,3 +7,4 @@ beautifulsoup4>=4.13,<5
 Pillow>=12.3,<13
 waitress>=3,<4
 tomli>=2,<3; python_version < '3.11'
+paramiko>=3.0,<6
