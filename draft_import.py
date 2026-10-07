@@ -6,6 +6,7 @@ import re
 import uuid
 
 from git_sync import atomic_write, UUID, KINDS
+from research_images import validate_images
 
 MAX_BYTES = 2 * 1024 * 1024
 SUFFIXES = {'.md', '.markdown', '.txt'}
@@ -48,6 +49,7 @@ def validate(draft):
         raise ValueError('草稿正文无效。')
     decode_text(content.encode('utf-8'))
     metadata=draft.get('metadata',{})
+    validate_images(draft.get('images', []))
     if (not isinstance(metadata,dict) or not all(isinstance(k,str) and isinstance(v,str) for k,v in metadata.items())
             or set(metadata)-{'knowledge_category','learning_topic','search_date','search_count','search_method'}
             or len(json.dumps(metadata))>4000):
@@ -56,7 +58,7 @@ def validate(draft):
 
 
 def stage_draft(data_dir, content, *, kind='idea', title='', project_id=None,
-                tags='', source_name='终端讨论.md', metadata=None):
+                tags='', source_name='终端讨论.md', metadata=None, images=None):
     content = decode_text(content.encode('utf-8'))
     # Only a display name is persisted, never an arbitrary server filesystem path.
     source_name = source_name.replace('\\','/').split('/')[-1][:240]
@@ -64,7 +66,7 @@ def stage_draft(data_dir, content, *, kind='idea', title='', project_id=None,
                       'title':title.strip() or inferred_title(content,source_name),
                       'project_id':None if kind=='project' else project_id,
                       'tags':tags, 'source_name':source_name,
-                      'content':content, 'metadata':metadata or {}, 'created_at':datetime.now(timezone.utc).isoformat(timespec='microseconds')})
+                      'content':content, 'metadata':metadata or {}, 'images':images or [], 'created_at':datetime.now(timezone.utc).isoformat(timespec='microseconds')})
     cache = Path(data_dir)
     cache.mkdir(parents=True,exist_ok=True,mode=0o700)
     (cache/'import-drafts').mkdir(exist_ok=True,mode=0o700)
@@ -92,7 +94,7 @@ def load_draft(data_dir, identifier):
     return draft
 
 
-def list_drafts(data_dir):
+def list_drafts(data_dir, *, limit=100):
     folder = Path(data_dir)/'import-drafts'
     paths = sorted((path for path in folder.glob('*.json') if not path.is_symlink() and path.is_file()),
                    key=lambda path:path.stat().st_mtime_ns,reverse=True)
@@ -103,4 +105,4 @@ def list_drafts(data_dir):
         except (ValueError,OSError):
             continue
         drafts.append({key:value for key,value in draft.items() if key!='content'})
-    return sorted(drafts,key=lambda draft:draft['created_at'],reverse=True)[:100]
+    return sorted(drafts,key=lambda draft:draft['created_at'],reverse=True)[:limit]

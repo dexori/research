@@ -9,6 +9,8 @@ if (chat) {
   const project = chat.querySelector('#chat-project');
   let busy = false;
   let timer;
+  let clock;
+  let submittingAt=0;
   const showMessages = messages => {
     container.replaceChildren();
     for (const item of messages) {
@@ -20,9 +22,27 @@ if (chat) {
       label.textContent = item.role === 'user' ? '我' : `Codex · 科研助手${item.status === 'error' ? ' · 未完成' : ''}`;
       const body = document.createElement('div');
       body.className = 'chat-message-body';
-      if (item.status === 'pending') body.textContent = 'Codex 正在思考，请稍候…';
+      if (item.status === 'pending') body.innerHTML = item.progress?.output_html || '<p class="muted">等待终端公开输出。部分服务只在完成时返回正文，期间可查看下方真实阶段与用时。</p>';
       else body.innerHTML = item.html; // HTML is sanitized by the authenticated backend.
       article.append(label,body);
+      if (item.progress) {
+        const progress=document.createElement('details'); progress.className='chat-progress';
+        progress.open=item.status==='pending';
+        const summary=document.createElement('summary'); summary.textContent='处理过程 · '+item.progress.detail;
+        const time=document.createElement('span'); time.className='chat-elapsed';
+        time.dataset.seconds=String(item.progress.elapsed_seconds || 0); time.dataset.received=String(Date.now());
+        time.dataset.running=String(item.status==='pending');
+        const elapsed=Number(time.dataset.seconds);
+        time.textContent=`已用时 ${Math.floor(elapsed/60)} 分 ${elapsed%60} 秒`;
+        const list=document.createElement('ol');
+        for (const event of item.progress.events || []) {
+          const row=document.createElement('li'), stamp=document.createElement('time');
+          stamp.textContent=new Date(event.at).toLocaleTimeString('zh-CN',{hour12:false});
+          row.append(stamp,document.createTextNode(event.detail)); list.append(row);
+        }
+        const note=document.createElement('p'); note.className='small muted';note.textContent='显示真实调用状态与助手公开输出，不包含内部思考原文，不模拟执行日志。';
+        progress.append(summary,time,list,note); article.append(progress);
+      }
       if (item.role === 'assistant' && item.status === 'complete') {
         const sources = document.createElement('div'); sources.className = 'chat-sources';
         const draft = document.querySelector('#chat-draft-template').content.cloneNode(true);
@@ -44,12 +64,20 @@ if (chat) {
     }
     window.renderResearchMath?.(container);
     window.renderResearchDiagrams?.(container);
+    window.renderResearchReading?.(container);
     container.scrollTop = container.scrollHeight;
     busy = messages.some(item => item.status === 'pending');
     button.disabled = busy;
-    button.textContent = busy ? 'Codex 思考中…' : '发送给 Codex';
+    button.textContent = busy ? 'Codex 正在回答…' : '发送给 Codex';
     status.textContent = busy ? '正在调用本机 Codex，最多等待 3 分钟；可以在其他页面继续工作。' : '回答不会自动写入笔记，保存前请核对事实与引用。';
   };
+  clock=setInterval(()=>{
+    if (submittingAt) status.textContent=`正在提交问题与参考资料… 已等待 ${Math.floor((Date.now()-submittingAt)/1000)} 秒`;
+    container.querySelectorAll('.chat-elapsed').forEach(node=>{
+    const elapsed=Number(node.dataset.seconds)+(node.dataset.running==='true'?Math.floor((Date.now()-Number(node.dataset.received))/1000):0);
+    node.textContent=`已用时 ${Math.floor(elapsed/60)} 分 ${elapsed%60} 秒`;
+    });
+  },1000);
   const setThread = identifier => {
     chat.dataset.threadId = identifier;
     form.querySelector('[name=thread_id]').value = identifier;
@@ -69,27 +97,30 @@ if (chat) {
       const payload = await decode(await fetch(url,{cache:'no-store'}));
       if (!payload.messages) throw new Error(payload.error || '无法读取对话，请刷新页面。');
       showMessages(payload.messages);
-      if (busy) timer=setTimeout(poll,3000);
+      if (busy) timer=setTimeout(poll,1000);
     } catch (error) { status.textContent=error.message; }
   };
   form.addEventListener('submit',async event => {
     event.preventDefault();
     if (busy || !input.value.trim()) return;
     busy=true;button.disabled=true;button.textContent='Codex 思考中…';
+    submittingAt=Date.now();
     status.textContent='正在检索相关笔记并调用本机 Codex，请稍候…';
-    const data=new FormData(form);data.set('project_id',project.value);
+    const data=new FormData(form);data.set('project_id',project.value);data.set('stream','1');
     try {
       const response=await fetch(chat.dataset.sendUrl,{method:'POST',body:data});
       const payload=await decode(response);
+      submittingAt=0;
       if (payload.thread_id) setThread(payload.thread_id);
       if (payload.messages) { showMessages(payload.messages); input.value=''; }
+      if (busy) { clearTimeout(timer); timer=setTimeout(poll,500); }
       if (payload.paper_status) {
         document.querySelectorAll('[data-paper-read-status],[data-paper-source-status]').forEach(node=>node.textContent=payload.paper_status);
       }
       if (payload.error) status.textContent=payload.error;
       if (!response.ok && !payload.messages) throw new Error(payload.error || '发送失败，请稍后重试。');
     } catch(error) { status.textContent=error.message; }
-    finally { busy=false;button.disabled=false;button.textContent='发送给 Codex'; }
+    finally { submittingAt=0; if (!container.querySelector('.pending')) { busy=false;button.disabled=false;button.textContent='发送给 Codex'; } }
   });
   input.addEventListener('keydown', event => {
     if (event.key==='Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault();form.requestSubmit(); }

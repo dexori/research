@@ -165,6 +165,7 @@ function displayLearning(job) {
     output.innerHTML=html || '<p class="muted">尚未收到公开正文。</p>';
     window.renderResearchMath?.(output);
     window.renderResearchDiagrams?.(output);
+    window.renderResearchReading?.(output);
   }
   const review=progressPanel.querySelector('[data-learning-review]'); review.replaceChildren();
   if (job.status==='ready' && job.review_url) review.append(learningReviewLink(job.review_url));

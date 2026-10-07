@@ -7,6 +7,7 @@ import getpass
 import io
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import sqlite3
@@ -22,6 +23,7 @@ import bleach
 from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, send_file, session, url_for
 import markdown
 from markupsafe import Markup
+from bs4 import BeautifulSoup
 from werkzeug.security import check_password_hash, generate_password_hash
 from git_sync import GitWorkspace, SyncError, atomic_write, UUID
 from github_auth import GitHubAuth
@@ -30,6 +32,8 @@ from draft_import import MAX_BYTES as DRAFT_BYTES, SUFFIXES, decode_text, stage_
 from math_compat import MathCompatExtension
 from paper_reader import PaperReader, PaperError
 from learning import CATEGORIES as KNOWLEDGE_CATEGORIES, prepare_card, PublicLearningSearch
+from research_images import (MAX_IMAGE_BYTES, PORTABLE_IMAGE, DRAFT_IMAGE, inspect_image,
+                             asset_path, stage_image, insert_illustration, illustration_prompt)
 
 ROOT = Path(__file__).resolve().parent
 KINDS = {
@@ -127,6 +131,10 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_ai_messages_thread ON ai_messages(thread_id,created_at);
+            CREATE TABLE IF NOT EXISTS assistant_progress (
+                message_id TEXT PRIMARY KEY REFERENCES ai_messages(id) ON DELETE CASCADE,
+                state TEXT NOT NULL DEFAULT '{}'
+            );
             CREATE TABLE IF NOT EXISTS draft_imports (
                 draft_id TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES entries(id), imported_at TEXT NOT NULL
             );
@@ -233,7 +241,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
                 raise BridgeError('请输入自定义模型名称。')
         return validate_selection(model,request.form.get('reasoning_effort','').strip())
 
-    def learning_worker(identifier, topic, project_id, mode, selection):
+    def learning_worker(identifier, topic, project_id, mode, selection, illustrated=False):
         """Network work runs outside the workspace lock; only stage an unsaved draft."""
         def report(event):
             with app.app_context():
@@ -247,13 +255,27 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
                       else bridge.research_topic(topic, on_progress=report, **selection))
             report({'stage':'validating','detail':'正在检查检索记录与引用来源；草稿尚未保存。','output':result.get('content','')})
             card = prepare_card(topic, result)
+            images = []
+            if illustrated:
+                report({'stage':'illustrating','detail':'文字与来源校验完成，准备生成一张 img2 教学配图。','output':card['content']})
+                prompt = illustration_prompt(topic, card['content'])
+                try:
+                    raw = bridge.generate_image(prompt, on_progress=report, **selection)
+                    image = stage_image(directory, raw, prompt)
+                    images.append(image)
+                    card['content'] = insert_illustration(card['content'], image)
+                    report({'stage':'layout','detail':'配图已生成，正在整理图文草稿；仍需人工核对图中关系。','output':card['content']})
+                except (BridgeError, OSError, ValueError):
+                    # Never discard the valid sourced text because a separate image call failed.
+                    report({'stage':'layout','detail':'img2 配图未完成（权限、额度、网络或输出格式）。已保留完整文字草稿，可审核保存。'})
+                    card['content'] += '\n\n> 配图状态：本次 img2 未生成可用图片，文字草稿已保留。可在审核页重试配图。\n'
             with app.app_context(), workspace.lock:
                 job = db().execute('SELECT status FROM learning_jobs WHERE id=?', (identifier,)).fetchone()
                 if not job or job['status']!='pending':
                     return
                 draft = stage_draft(directory, card['content'], kind='knowledge', title=topic,
                                     project_id=project_id, tags=card['tags'],
-                                    source_name='联网学习整理（AI 草稿）', metadata=card['metadata'])
+                                    source_name='联网学习整理（AI 草稿）', metadata=card['metadata'], images=images)
                 db().execute("UPDATE learning_jobs SET status='ready',draft_id=?,updated_at=? WHERE id=? AND status='pending'",
                              (draft['id'], now(), identifier))
                 save_learning_progress(identifier, {'stage':'ready','detail':'草稿已生成，请审核后保存。','output':card['content']})
@@ -271,7 +293,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         """Persist bounded public progress, not internal reasoning or tool transcripts."""
         row = db().execute('SELECT state FROM learning_progress WHERE job_id=?', (identifier,)).fetchone()
         state = json.loads(row['state']) if row else {}
-        stages = {'queued','planning','searching','reading','generating','validating','ready','error'}
+        stages = {'queued','planning','searching','reading','generating','validating','illustrating','layout','ready','error'}
         stage = event.get('stage')
         if stage not in stages:
             return
@@ -305,7 +327,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         db().commit()
 
     def expire_learning_jobs():
-        cutoff = datetime.fromtimestamp(time.time()-540, timezone.utc).isoformat(timespec='microseconds')
+        cutoff = datetime.fromtimestamp(time.time()-900, timezone.utc).isoformat(timespec='microseconds')
         db().execute("UPDATE learning_jobs SET status='error',error='任务已中断或超时，请重新整理。未修改已有笔记。',updated_at=? WHERE status='pending' AND created_at<?",
                      (now(), cutoff))
         db().commit()
@@ -327,6 +349,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         topic = request.form.get('topic', '').strip()
         project_id = request.form.get('project_id') or None
         mode = request.form.get('mode', 'public')
+        illustrated = request.form.get('illustrated','') == '1'
         if mode not in {'public','codex'}:
             return jsonify(error='请选择有效的检索方式。'), 400
         if not topic or len(topic)>240 or any(ord(char)<32 for char in topic):
@@ -347,7 +370,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         save_learning_progress(identifier, {'stage':'queued','detail':'主题已提交，准备检索资料。', 'selection':selection})
         db().commit()
         try:
-            threading.Thread(target=learning_worker, args=(identifier, topic, project_id, mode, selection), daemon=True).start()
+            threading.Thread(target=learning_worker, args=(identifier, topic, project_id, mode, selection, illustrated), daemon=True).start()
         except RuntimeError:
             db().execute("UPDATE learning_jobs SET status='error',error='无法启动整理任务，请重试。' WHERE id=?", (identifier,))
             db().commit()
@@ -460,16 +483,75 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
     def render_md(text):
         html = markdown.markdown(text, extensions=["fenced_code", "tables", "sane_lists", "pymdownx.arithmatex", MathCompatExtension()],
                                  extension_configs={"pymdownx.arithmatex":{"generic":True}})
+        # Git-portable relative image references are resolved only to local authenticated media.
+        document = BeautifulSoup(html, 'html.parser')
+        for image in document.find_all('img'):
+            source = str(image.get('src',''))
+            match = PORTABLE_IMAGE.fullmatch(source)
+            if match:
+                image['src'] = '/media/'+match[1]
+            elif not re.fullmatch(r'/(?:media|draft-media)/[a-f0-9]{32}',source):
+                image.decompose()
+                continue
+            image['loading'] = 'lazy'
+        html = str(document)
         def safe_attribute(tag, name, value):
+            if tag=='img':
+                return (name in {'alt','title','loading'} or name=='src' and
+                        bool(re.fullmatch(r'/(?:media|draft-media)/[a-f0-9]{32}',value)))
             if tag=='a':
                 return name in {'href','title'}
             if tag=='code':
                 return name=='class'
             return tag in {'span','div'} and name=='class' and value=='arithmatex'
-        return Markup(bleach.clean(html, tags={"p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "a", "strong", "em", "del", "blockquote", "ul", "ol", "li", "code", "pre", "table", "thead", "tbody", "tr", "th", "td", "span", "div"},
+        return Markup(bleach.clean(html, tags={"p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "a", "strong", "em", "del", "blockquote", "ul", "ol", "li", "code", "pre", "table", "thead", "tbody", "tr", "th", "td", "span", "div", "img"},
                                  attributes=safe_attribute, protocols=["http", "https", "mailto"], strip=True))
 
     app.jinja_env.filters["markdown"] = render_md
+
+    @app.post('/markdown/preview')
+    def markdown_preview():
+        content = request.form.get('content','')
+        if len(content) > 200000:
+            return jsonify(error='预览正文超过 20 万字，请拆分记录。'), 400
+        return jsonify(html=str(render_md(content)))
+
+    def send_image(raw):
+        try:
+            info = inspect_image(raw)
+        except ValueError:
+            abort(415, '附件不是有效的静态 PNG、JPEG 或 WebP 图片。')
+        response = send_file(io.BytesIO(raw), mimetype=info['mimetype'], max_age=0)
+        response.headers['Cache-Control'] = 'private, no-store'
+        return response
+
+    @app.get('/media/<identifier>')
+    def image_media(identifier):
+        if not UUID.fullmatch(identifier):
+            abort(404)
+        row = db().execute('SELECT storage_name FROM attachments WHERE storage_name=?',(identifier,)).fetchone()
+        if not row:
+            abort(404)
+        path = directory/'uploads'/row['storage_name']
+        if path.is_symlink() or not path.is_file():
+            abort(404)
+        with path.open('rb') as stream:
+            return send_image(stream.read(MAX_IMAGE_BYTES+1))
+
+    @app.get('/draft-media/<identifier>')
+    def draft_media(identifier):
+        if not UUID.fullmatch(identifier):
+            abort(404)
+        # A real, validated draft must own this asset; knowing a filename is insufficient.
+        for draft in list_drafts(directory, limit=500):
+            for image in draft.get('images',[]):
+                if image['id']==identifier:
+                    try:
+                        with asset_path(directory, identifier, image['extension']).open('rb') as stream:
+                            return send_image(stream.read(MAX_IMAGE_BYTES+1))
+                    except OSError:
+                        abort(404)
+        abort(404)
 
     @app.get('/diagrams/renderer')
     def diagram_renderer():
@@ -489,8 +571,38 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             message = dict(row)
             message['sources'] = json.loads(message['sources'])
             message['html'] = str(render_md(message['content']))
+            saved = db().execute('SELECT state FROM assistant_progress WHERE message_id=?',(message['id'],)).fetchone()
+            if saved:
+                progress = json.loads(saved['state'])
+                output = progress.pop('output','')
+                progress['output_html'] = str(render_md(output)) if output else ''
+                began = datetime.fromisoformat(message['created_at'])
+                ended = datetime.fromisoformat(progress.get('ended_at') or now())
+                # Old imported/test records may predate explicit UTC offsets.
+                began = began.replace(tzinfo=began.tzinfo or timezone.utc)
+                ended = ended.replace(tzinfo=ended.tzinfo or timezone.utc)
+                progress['elapsed_seconds'] = max(0,int((ended-began).total_seconds()))
+                message['progress'] = progress
             messages.append(message)
         return messages
+
+    def save_assistant_progress(identifier, event):
+        if event.get('stage') not in {'queued','reading','generating','complete','error'}:
+            return
+        saved = db().execute('SELECT state FROM assistant_progress WHERE message_id=?',(identifier,)).fetchone()
+        state = json.loads(saved['state']) if saved else {}
+        detail, stamp = str(event.get('detail',''))[:1200], now()
+        events = state.get('events',[])
+        if not events or events[-1]['detail']!=detail:
+            events.append({'stage':event['stage'],'detail':detail,'at':stamp})
+        state.update(stage=event['stage'], detail=detail, events=events[-40:])
+        if isinstance(event.get('output'),str):
+            state['output'] = event['output'][:60000]
+        if event['stage'] in {'complete','error'}:
+            state['ended_at'] = stamp
+        db().execute('INSERT INTO assistant_progress VALUES (?,?) ON CONFLICT(message_id) DO UPDATE SET state=excluded.state',
+                     (identifier,json.dumps(state,ensure_ascii=False)))
+        db().commit()
 
     @app.get('/assistant')
     def assistant_page():
@@ -509,9 +621,13 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         thread = chat_thread(identifier)
         # A killed server must not leave a conversation waiting forever.
         cutoff = datetime.fromtimestamp(time.time()-240, timezone.utc).isoformat(timespec='microseconds')
+        expired = db().execute("SELECT id FROM ai_messages WHERE thread_id=? AND status='pending' AND created_at<?",
+                               (identifier,cutoff)).fetchall()
         db().execute("UPDATE ai_messages SET status='error',content='回答已中断或超时，请重新发送问题。' WHERE thread_id=? AND status='pending' AND created_at<?",
                      (identifier,cutoff))
         db().commit()
+        for message in expired:
+            save_assistant_progress(message['id'], {'stage':'error','detail':'回答已中断或超时，请重新发送问题。'})
         return jsonify(thread=thread,messages=chat_messages(identifier))
 
     @app.post('/assistant/connection/check')
@@ -603,6 +719,9 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
                      (answer_id, identifier, json.dumps(references,ensure_ascii=False), now()))
         db().execute('UPDATE ai_threads SET updated_at=? WHERE id=?', (now(),identifier))
         db().commit()
+        streaming = request.form.get('stream')=='1'
+        if streaming:
+            save_assistant_progress(answer_id, {'stage':'queued','detail':f'已整理 {len(sources)} 条参考记录，准备提交本机 Codex。'})
         history = [{'role': item['role'], 'content': item['content'][:2000]}
                    for item in previous if item['status']=='complete'][-10:]
         if thread['context_id'] and sources and sources[0]['kind']=='paper':
@@ -612,19 +731,43 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         # Do not freeze the entire research workspace while Codex is thinking.
         workspace.lock.release()
         g.workspace_locked = False
-        error = None
-        try:
-            answer = bridge.answer(question, history, sources, **selection)
-        except BridgeError as failure:
-            error = str(failure)
-            answer = error
-        except Exception:
-            error = answer = '本次回答未完成，问题已保留。请检查 Codex 登录与网络后重试。'
+        def finish():
+            def report(event):
+                with app.app_context(), workspace.lock:
+                    pending = db().execute('SELECT status FROM ai_messages WHERE id=?',(answer_id,)).fetchone()
+                    if pending and pending['status']=='pending':
+                        save_assistant_progress(answer_id,event)
+            error = None
+            try:
+                options = {'on_progress':report} if streaming else {}
+                answer = bridge.answer(question, history, sources, **options, **selection)
+            except BridgeError as failure:
+                error = answer = str(failure)
+            except Exception:
+                error = answer = '本次回答未完成，问题已保留。请检查 Codex 登录与网络后重试。'
+            with app.app_context(), workspace.lock:
+                result = db().execute("UPDATE ai_messages SET content=?,status=? WHERE id=? AND status='pending'",
+                                     (answer, 'error' if error else 'complete', answer_id))
+                db().execute('UPDATE ai_threads SET updated_at=? WHERE id=?', (now(),identifier))
+                db().commit()
+                if streaming and result.rowcount:
+                    save_assistant_progress(answer_id, {'stage':'error' if error else 'complete',
+                                                       'detail':error or '回答已完成，可以核对来源并审核保存。'})
+            return error
+        if streaming:
+            try:
+                threading.Thread(target=finish,daemon=True).start()
+            except RuntimeError:
+                with workspace.lock:
+                    db().execute("UPDATE ai_messages SET status='error',content='无法启动回答，请重试。' WHERE id=?",(answer_id,))
+                    db().commit()
+                    save_assistant_progress(answer_id, {'stage':'error','detail':'无法启动回答，请重试。'})
+                return jsonify(error='无法启动回答，请重试。',thread_id=identifier),503
+            with workspace.lock:
+                messages = chat_messages(identifier)
+            return jsonify(thread_id=identifier,messages=messages),202
+        error = finish()
         with workspace.lock:
-            db().execute('UPDATE ai_messages SET content=?,status=? WHERE id=?',
-                         (answer, 'error' if error else 'complete', answer_id))
-            db().execute('UPDATE ai_threads SET updated_at=? WHERE id=?', (now(),identifier))
-            db().commit()
             messages = chat_messages(identifier)
         selected = get_entry(thread['context_id']) if thread['context_id'] else None
         return jsonify(thread_id=identifier, messages=messages, error=error,
@@ -787,6 +930,37 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
                 raise ValueError("实验指标值须为有限数字，例如 0.76 或 76。")
         stamp = now()
         identifier = current["id"] if current else uuid.uuid4().hex
+        image_files = []
+        if '/draft-media/' in content:
+            if not import_id:
+                raise ValueError('临时草稿图片须通过审核导入，不能直接引用。')
+            draft = checked_draft(import_id)
+            owned = {image['id']:image for image in draft.get('images',[])}
+            included = set(request.form.getlist('include_image'))
+            def portable(match):
+                asset_id = match[2]
+                if asset_id not in owned:
+                    raise ValueError('正文引用了不属于这份草稿的图片。')
+                if asset_id not in included:
+                    return ''
+                image = owned[asset_id]
+                with asset_path(directory,asset_id,image['extension']).open('rb') as stream:
+                    raw = stream.read(MAX_IMAGE_BYTES+1)
+                info = inspect_image(raw)
+                if info['extension']!=image['extension']:
+                    raise ValueError('草稿图片格式与清单不一致。')
+                if not any(file['asset_id']==asset_id for file in image_files):
+                    image_files.append({'asset_id':asset_id,'storage_name':uuid.uuid4().hex,'image':image,'raw':raw})
+                file = next(file for file in image_files if file['asset_id']==asset_id)
+                return '!['+match[1]+'](../attachments/'+file['storage_name']+'/attachment.'+image['extension']+')'
+            try:
+                content = DRAFT_IMAGE.sub(portable,content)
+            except OSError:
+                raise ValueError('草稿图片缺失，请取消勾选图片后保存文字，或重新生成配图。') from None
+            if '/draft-media/' in content:
+                raise ValueError('请使用审核页提供的 Markdown 图片引用。')
+            if not image_files:
+                content = re.sub(r'^\*图 1 · AI 生成的教学示意图[^\n]*\*\n?', '',content,flags=re.M)
         values = (title, status, tags, project_id, content, json.dumps(meta, ensure_ascii=False), stamp)
         if current:
             try:
@@ -798,6 +972,10 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
                 raise ValueError("这条记录已在另一台电脑更新。本页内容已保留，请复制后查看最新版本，避免覆盖。")
         else:
             db().execute("INSERT INTO entries (title,status,tags,project_id,content,metadata,updated_at,id,kind,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)", values + (identifier, kind, stamp))
+        for file in image_files:
+            atomic_write(directory/'uploads'/file['storage_name'],file['raw'])
+            db().execute('INSERT INTO attachments VALUES (?,?,?,?,?,?)',
+                         (uuid.uuid4().hex,identifier,file['image']['name'],file['storage_name'],len(file['raw']),stamp))
         try:
             workspace.write_entry(db(), identifier)
         except (OSError, SyncError) as error:
@@ -862,7 +1040,77 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             flash('草稿指定的项目在本机不存在，请重新选择关联项目。','error')
             entry['project_id'] = None
         return render_template('editor.html',active='imports',kind=kind,entry=entry,projects=projects(),
-                               editing=False,submit_url=url_for('new',kind=kind),import_draft=draft)
+                               editing=False,submit_url=url_for('new',kind=kind),import_draft=draft,bridge=bridge_status())
+
+    def illustration_worker(job_id, draft, content, selection):
+        def report(event):
+            with app.app_context(), workspace.lock:
+                job = db().execute('SELECT status FROM learning_jobs WHERE id=?',(job_id,)).fetchone()
+                if job and job['status']=='pending':
+                    save_learning_progress(job_id,event)
+        images = []
+        try:
+            prompt = illustration_prompt(draft['title'], content)
+            raw = app.extensions['codex_bridge'].generate_image(prompt,on_progress=report,**selection)
+            image = stage_image(directory,raw,prompt)
+            images.append(image)
+            content = insert_illustration(content,image)
+            report({'stage':'layout','detail':'图片已生成，准备新的待审核图文版本。'})
+        except Exception:
+            report({'stage':'layout','detail':'配图未完成，修改后的文字已保留。当前服务的生图权限、额度或网络需要检查。'})
+            content += '\n\n> 配图状态：本次没有生成可用图片，文字修改已保留。\n'
+        with app.app_context(), workspace.lock:
+            job = db().execute('SELECT status FROM learning_jobs WHERE id=?',(job_id,)).fetchone()
+            if not job or job['status']!='pending':
+                return
+            try:
+                new_draft = stage_draft(directory,content,kind=draft['kind'],title=draft['title'],
+                                        project_id=draft['project_id'],tags=draft['tags'],metadata=draft['metadata'],
+                                        source_name='图文排版（AI 草稿）',images=images)
+                db().execute("UPDATE learning_jobs SET status='ready',draft_id=?,updated_at=? WHERE id=?",(new_draft['id'],now(),job_id))
+                save_learning_progress(job_id,{'stage':'ready','detail':'图文版本已整理，请审核后保存。','output':content})
+                db().commit()
+            except (OSError, ValueError):
+                db().rollback()
+                message = '图文草稿保存失败，请检查磁盘后重试。原草稿未覆盖，请保留编辑框中的修改。'
+                db().execute("UPDATE learning_jobs SET status='error',error=?,updated_at=? WHERE id=? AND status='pending'",(message,now(),job_id))
+                save_learning_progress(job_id,{'stage':'error','detail':message})
+                db().commit()
+
+    @app.post('/imports/<identifier>/illustrate')
+    def import_illustrate(identifier):
+        draft = checked_draft(identifier)
+        if imported_record(identifier):
+            return jsonify(error='草稿已保存，请先新建草稿。'),409
+        try:
+            selection = codex_selection()
+            content = decode_text(request.form.get('content',draft['content']).encode('utf-8'))
+            if len(content)>60000:
+                raise ValueError('配图草稿超过 6 万字，请拆分。')
+        except (ValueError,BridgeError) as error:
+            return jsonify(error=str(error)),400
+        expire_learning_jobs()
+        if db().execute("SELECT 1 FROM learning_jobs WHERE status='pending'").fetchone():
+            return jsonify(error='已有任务正在生成，请稍后重试。'),409
+        # Old version remains untouched; regeneration produces a separate reviewable draft.
+        content = DRAFT_IMAGE.sub('',content)
+        content = re.sub(r'^\*图 1 · AI 生成的教学示意图[^\n]*\*\n?', '',content,flags=re.M)
+        draft = dict(draft)
+        draft['title'] = request.form.get('title',draft['title']).strip()[:240] or draft['title']
+        draft['tags'] = request.form.get('tags',draft['tags'])[:1000]
+        draft['project_id'] = request.form.get('project_id') or None
+        if draft['project_id'] and not db().execute("SELECT 1 FROM entries WHERE id=? AND kind='project'",(draft['project_id'],)).fetchone():
+            return jsonify(error='关联项目不存在。'),400
+        identifier,stamp = uuid.uuid4().hex,now()
+        db().execute('INSERT INTO learning_jobs VALUES (?,?,?,?,?,?,?,?)',(identifier,draft['title'],draft['project_id'],'pending',None,'',stamp,stamp))
+        save_learning_progress(identifier,{'stage':'illustrating','detail':'已提交一张教学配图任务，不会覆盖原草稿。','selection':selection})
+        try:
+            threading.Thread(target=illustration_worker,args=(identifier,draft,content,selection),daemon=True).start()
+        except RuntimeError:
+            db().execute("UPDATE learning_jobs SET status='error',error='任务启动失败' WHERE id=?",(identifier,))
+            db().commit()
+            return jsonify(error='任务启动失败，请重试。'),503
+        return jsonify(job_url=url_for('learning_job',identifier=identifier)),202
 
     @app.route("/new/<kind>", methods=["GET", "POST"])
     def new(kind):
@@ -1095,7 +1343,12 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
                     except (ValueError,OSError):
                         continue
                     archive.writestr('import-drafts/'+draft['id']+'.json',json.dumps(draft,ensure_ascii=False))
-                archive.writestr("RESTORE.txt", "停止服务后，将 research.sqlite3 放入一个新的 data 目录；将 attachments 目录改名为 uploads；如果存在 import-drafts 目录，也复制到该 data 目录。使用 RESEARCH_DATA_DIR 指向该目录启动。原密码仍有效。请勿把含私人资料的备份上传公开仓库。\n")
+                    for image in draft.get('images',[]):
+                        image_file = asset_path(directory,image['id'],image['extension'])
+                        target = 'draft-assets/'+image_file.name
+                        if image_file.is_file() and target not in archive.namelist():
+                            archive.write(image_file,target)
+                archive.writestr("RESTORE.txt", "停止服务后，将 research.sqlite3 放入一个新的 data 目录；将 attachments 目录改名为 uploads；如果存在 import-drafts 和 draft-assets 目录，也复制到该 data 目录。使用 RESEARCH_DATA_DIR 指向该目录启动。原密码仍有效。请勿把含私人资料的备份上传公开仓库。\n")
             snapshot.close()
             output.seek(0)
         return send_file(output, as_attachment=True, download_name=f"research-hub-{datetime.now():%Y%m%d-%H%M%S}.zip", mimetype="application/zip")

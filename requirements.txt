@@ -4,5 +4,6 @@ pymdown-extensions>=10.14,<11
 bleach>=6.2,<7
 pypdf>=6.19,<7
 beautifulsoup4>=4.13,<5
+Pillow>=12.3,<13
 waitress>=3,<4
 tomli>=2,<3; python_version < '3.11'
