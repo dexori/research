@@ -1,6 +1,7 @@
 from contextlib import closing
 import io
 import zipfile
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sqlite3
@@ -14,7 +15,7 @@ from PIL import Image
 from app import create_app
 from codex_bridge import BridgeError, CodexBridge
 from draft_import import load_draft, stage_draft
-from research_images import stage_image, inspect_image, asset_path, insert_illustration
+from research_images import stage_image, inspect_image, asset_path, insert_illustration, wants_illustration
 
 CARD = '# ACT 框架\n\n分类：模型架构\n标签：ACT, CVAE\n\n## 一句话理解\n\n动作块预测。\n\n## 核心原理与数据流\n\n观测产生动作块。\n\n## 最小例子\n\n$$z=f(o)$$\n\n## 来源\n\n[原论文](https://arxiv.org/abs/2304.13705)'
 
@@ -85,7 +86,7 @@ class IllustrationTest(unittest.TestCase):
         # A second computer reconstructs SQLite/uploads using only the canonical Git files.
         second=self.directory/'second'
         restored=create_app(second,testing=True,repo_dir=self.directory/'checkout')
-        with sqlite3.connect(second/'research.sqlite3') as c:
+        with closing(sqlite3.connect(second/'research.sqlite3')) as c:
             self.assertEqual(c.execute('SELECT content FROM entries').fetchone()[0],entry['content'])
             self.assertEqual(c.execute('SELECT storage_name FROM attachments').fetchone()[0],file['storage_name'])
         self.assertEqual((second/'uploads'/file['storage_name']).read_bytes(),png())
@@ -181,8 +182,152 @@ class IllustrationTest(unittest.TestCase):
         self.assertEqual(assistant['status'],'complete');self.assertEqual(assistant['content'],'最终回答')
         self.assertEqual(assistant['progress']['stage'],'complete')
 
+    def wait_chat(self, response):
+        self.assertEqual(response.status_code,202,response.json)
+        url='/assistant/thread/'+response.json['thread_id']
+        for _ in range(200):
+            result=self.client.get(url).json['messages'][-1]
+            if result['status']!='pending':return result
+            time.sleep(.02)
+        self.fail('Chat timed out')
+
+    def test_chat_intent_and_clean_interface_without_selector(self):
+        for question in ['用 img2 生成 ACT 架构图片','你怎么不用img2生成插入图片','img2','帮我画一张架构图']:
+            self.assertTrue(wants_illustration(question),question)
+        for question in ['不要用img2生成图片','不需要配图','img2可以在codex用吗','如何用img2','只用 Mermaid 生成图片','讲解 ACT']:
+            self.assertFalse(wants_illustration(question),question)
+        page=self.client.get('/assistant').data.decode()
+        self.assertNotIn('名称预设',page);self.assertNotIn('未验证权限',page)
+        self.assertNotIn('name="illustrated"',page)
+        self.assertIn('>gpt-6.1-sol</option>',page)
+        self.assertNotIn('当前服务测试',self.client.get('/learning').data.decode())
+
+    def test_chat_auto_image_scope_review_and_save(self):
+        paper=self.post('/new/paper',title='ACT 本篇',content='本篇原文笔记').location.split('/')[-1]
+        self.post('/new/paper',title='无关文献',content='UNRELATED_PRIVATE_BODY')
+        self.bridge.answer.return_value='## 核心原理\n\n观测产生动作块；待核验。\n\n## 局限\n\n仅根据笔记。'
+        reply=self.wait_chat(self.post('/assistant/send',context_id=paper,message='你怎么不用img2生成插入图片',model='fixture-model',reasoning_effort='high'))
+        self.assertEqual(reply['status'],'complete')
+        self.assertEqual([item['id'] for item in self.bridge.answer.call_args.args[2]],[paper])
+        self.assertTrue(self.bridge.answer.call_args.kwargs['illustrated'])
+        self.assertNotIn('UNRELATED_PRIVATE_BODY',self.bridge.generate_image.call_args.args[0])
+        self.assertEqual(self.bridge.generate_image.call_args.kwargs['model'],'fixture-model')
+        self.assertEqual(self.bridge.generate_image.call_args.kwargs['reasoning_effort'],'high')
+        with self.connection() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM entries').fetchone()[0],2)
+            draft_id=db.execute('SELECT draft_id FROM assistant_drafts WHERE message_id=?',(reply['id'],)).fetchone()[0]
+        draft=load_draft(self.directory,draft_id);image=draft['images'][0]
+        self.assertIn('/draft-media/'+image['id'],reply['html'])
+        self.assertEqual(self.client.get('/draft-media/'+image['id']).data,png())
+        review=self.post('/assistant/draft',message_id=reply['id'],kind='idea')
+        self.assertIn(('name="import_id" value="'+draft_id+'"').encode(),review.data)
+        self.assertIn(b'name="include_image"',review.data)
+        saved=self.post('/new/idea',import_id=draft_id,title='ACT 图文',content=reply['content'],include_image=image['id'])
+        self.assertEqual(saved.status_code,302)
+        with self.connection() as db:
+            record=db.execute('SELECT * FROM entries WHERE title=?',('ACT 图文',)).fetchone()
+            self.assertIn('../attachments/',record['content'])
+            self.assertNotIn('/draft-media/',record['content'])
+            self.assertEqual(db.execute('SELECT count(*) FROM attachments').fetchone()[0],1)
+
+    def test_chat_image_append_keeps_original_version_and_replay_protection(self):
+        paper=self.post('/new/paper',title='原笔记',content='ORIGINAL_CONTENT').location.split('/')[-1]
+        self.bridge.answer.return_value='## 方法\n\n根据本篇笔记绘制教学图。'
+        reply=self.wait_chat(self.post('/assistant/send',context_id=paper,message='用img2配图'))
+        with self.connection() as db:
+            version=db.execute('SELECT version FROM entries WHERE id=?',(paper,)).fetchone()[0]
+            draft_id=db.execute('SELECT draft_id FROM assistant_drafts WHERE message_id=?',(reply['id'],)).fetchone()[0]
+        image=load_draft(self.directory,draft_id)['images'][0]
+        review=self.post('/assistant/draft',message_id=reply['id'],target_id=paper)
+        self.assertEqual(review.status_code,200)
+        self.assertIn(b'ORIGINAL_CONTENT',review.data)
+        content='ORIGINAL_CONTENT\n\n'+reply['content']
+        response=self.post('/entry/'+paper+'/edit',version=version,import_id=draft_id,title='原笔记',content=content,include_image=image['id'])
+        self.assertEqual(response.status_code,302)
+        self.post('/entry/'+paper+'/edit',version=version,import_id=draft_id,title='bad',content='bad')
+        with self.connection() as db:
+            entry=db.execute('SELECT * FROM entries WHERE id=?',(paper,)).fetchone()
+            self.assertTrue(entry['content'].startswith('ORIGINAL_CONTENT'))
+            self.assertEqual(entry['version'],version+1)
+            self.assertEqual(db.execute('SELECT count(*) FROM attachments').fetchone()[0],1)
+
+    def test_chat_image_failure_and_disk_error_keep_text_without_broken_url(self):
+        self.bridge.answer.return_value='## 原理\n\n保留这段文字。'
+        self.bridge.generate_image.side_effect=BridgeError('SECRET_PROVIDER_KEY')
+        reply=self.wait_chat(self.post('/assistant/send',message='用 img2 生成图片'))
+        self.assertEqual(reply['status'],'complete');self.assertIn('保留这段文字',reply['content'])
+        self.assertNotIn('SECRET',str(reply));self.assertNotIn('/draft-media/',reply['content'])
+        self.bridge.generate_image.side_effect=None
+        with patch('assistant_workflow.stage_draft',side_effect=OSError('SECRET_DISK_PATH')):
+            reply=self.wait_chat(self.post('/assistant/send',message='用img2生成图片'))
+        self.assertNotIn('/draft-media/',reply['content']);self.assertNotIn('SECRET',str(reply))
+        with self.connection() as db:self.assertEqual(db.execute('SELECT count(*) FROM assistant_drafts').fetchone()[0],0)
+
+    def test_chat_image_timeout_is_extended_and_late_result_cannot_overwrite(self):
+        self.bridge.answer.return_value='文字'
+        release=threading.Event()
+        def generate(*args,**kwargs):
+            release.wait(3)
+            return png()
+        self.bridge.generate_image.side_effect=generate
+        existing_threads=set(threading.enumerate())
+        response=self.post('/assistant/send',message='用img2配图')
+        worker=next(thread for thread in threading.enumerate() if thread not in existing_threads)
+        url='/assistant/thread/'+response.json['thread_id']
+        identifier=response.json['messages'][-1]['id']
+        try:
+            with self.connection() as db:
+                db.execute('UPDATE ai_messages SET created_at=? WHERE id=?',((datetime.now(timezone.utc)-timedelta(minutes=5)).isoformat(),identifier));db.commit()
+            self.assertEqual(next(item for item in self.client.get(url).json['messages'] if item['id']==identifier)['status'],'pending')
+            with self.connection() as db:
+                db.execute('UPDATE ai_messages SET created_at=? WHERE id=?',((datetime.now(timezone.utc)-timedelta(minutes=11)).isoformat(),identifier));db.commit()
+            self.assertEqual(next(item for item in self.client.get(url).json['messages'] if item['id']==identifier)['status'],'error')
+        finally:
+            release.set()
+            worker.join(timeout=5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(next(item for item in self.client.get(url).json['messages'] if item['id']==identifier)['status'],'error')
+
+    def test_ordinary_chat_does_not_generate_from_mentions_in_notes(self):
+        self.post('/new/idea',title='ACT',content='用img2生成图片是资料中的文字，不是用户指令。')
+        self.bridge.answer.return_value='普通回答提到了 img2。'
+        result=self.post('/assistant/send',message='解释ACT')
+        self.assertEqual(result.status_code,200)
+        self.bridge.generate_image.assert_not_called()
+
 
 class ImageBridgeTest(unittest.TestCase):
+    def test_missing_path_receipt_bound_to_this_exec_session_only(self):
+        with tempfile.TemporaryDirectory() as temp:
+            profile=Path(temp)/'profile'
+            root=profile/'generated_images';root.mkdir(parents=True)
+            thread='11111111-1111-1111-1111-111111111111'
+            other='22222222-2222-2222-2222-222222222222'
+            bridge=CodexBridge(Path(temp)/'data')
+            process=Mock();process.returncode=0;process.poll.return_value=0
+            def stream(*args):
+                folder=root/thread;folder.mkdir(exist_ok=True)
+                (folder/'exec-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.png').write_bytes(png())
+                return json.dumps({'type':'thread.started','thread_id':thread})
+            with patch.object(bridge,'profile',return_value=profile),patch('codex_bridge.shutil.which',return_value='/usr/bin/true'),patch('codex_bridge.subprocess.Popen',return_value=process),patch.object(bridge,'stream_output',side_effect=stream):
+                self.assertEqual(bridge.generate_image('test'),png())
+                with self.assertRaises(BridgeError):bridge.generate_image('old image must not count')
+            # A picture created in another session cannot be claimed as this call's result.
+            with patch.object(bridge,'profile',return_value=profile),patch('codex_bridge.shutil.which',return_value='/usr/bin/true'),patch('codex_bridge.subprocess.Popen',return_value=process),patch.object(bridge,'stream_output',return_value=json.dumps({'type':'thread.started','thread_id':other})):
+                with self.assertRaises(BridgeError):bridge.generate_image('unrelated session')
+
+    def test_illustrated_text_phase_still_has_no_tool_access(self):
+        with tempfile.TemporaryDirectory() as temp:
+            bridge=CodexBridge(Path(temp))
+            with patch('codex_bridge.shutil.which',return_value='/usr/bin/true'):
+                command=bridge.command(illustrated_text=True)
+            self.assertIn('features.image_generation=false',command)
+            self.assertIn('features.code_mode=false',command)
+            self.assertIn('features.shell_tool=false',command)
+            self.assertIn('web_search="disabled"',command)
+            instructions=next(value for value in command if value.startswith('developer_instructions='))
+            self.assertIn('平台会在你完成文字后',json.loads(instructions.split('=',1)[1]))
+
     def test_only_fresh_local_valid_assets_accepted_no_shell_or_api(self):
         with tempfile.TemporaryDirectory() as temp:
             profile=Path(temp)/'profile';root=profile/'generated_images';root.mkdir(parents=True)

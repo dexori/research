@@ -19,21 +19,19 @@ from datetime import datetime, timezone
 from contextlib import closing
 from urllib.parse import urlsplit
 
-import bleach
 from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, send_file, session, url_for
-import markdown
-from markupsafe import Markup
-from bs4 import BeautifulSoup
 from werkzeug.security import check_password_hash, generate_password_hash
 from git_sync import GitWorkspace, SyncError, atomic_write, UUID
 from github_auth import GitHubAuth
 from codex_bridge import CodexBridge, BridgeError, retrieve_notes, validate_selection, REASONING_EFFORTS
 from draft_import import MAX_BYTES as DRAFT_BYTES, SUFFIXES, decode_text, stage_draft, load_draft, list_drafts
-from math_compat import MathCompatExtension
+from markdown_rendering import render_md
+from media_routes import register_media_routes
+from assistant_workflow import ChatTurn, generate_chat_reply
 from paper_reader import PaperReader, PaperError
 from learning import CATEGORIES as KNOWLEDGE_CATEGORIES, prepare_card, PublicLearningSearch
-from research_images import (MAX_IMAGE_BYTES, PORTABLE_IMAGE, DRAFT_IMAGE, inspect_image,
-                             asset_path, stage_image, insert_illustration, illustration_prompt)
+from research_images import (MAX_IMAGE_BYTES, DRAFT_IMAGE, inspect_image,
+                             asset_path, stage_image, insert_illustration, illustration_prompt, wants_illustration)
 
 ROOT = Path(__file__).resolve().parent
 KINDS = {
@@ -134,6 +132,10 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             CREATE TABLE IF NOT EXISTS assistant_progress (
                 message_id TEXT PRIMARY KEY REFERENCES ai_messages(id) ON DELETE CASCADE,
                 state TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE TABLE IF NOT EXISTS assistant_drafts (
+                message_id TEXT PRIMARY KEY REFERENCES ai_messages(id) ON DELETE CASCADE,
+                draft_id TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS draft_imports (
                 draft_id TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES entries(id), imported_at TEXT NOT NULL
@@ -480,78 +482,10 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             raise PaperError(failure)
         return paper_source(get_entry(entry['id']))
 
-    def render_md(text):
-        html = markdown.markdown(text, extensions=["fenced_code", "tables", "sane_lists", "pymdownx.arithmatex", MathCompatExtension()],
-                                 extension_configs={"pymdownx.arithmatex":{"generic":True}})
-        # Git-portable relative image references are resolved only to local authenticated media.
-        document = BeautifulSoup(html, 'html.parser')
-        for image in document.find_all('img'):
-            source = str(image.get('src',''))
-            match = PORTABLE_IMAGE.fullmatch(source)
-            if match:
-                image['src'] = '/media/'+match[1]
-            elif not re.fullmatch(r'/(?:media|draft-media)/[a-f0-9]{32}',source):
-                image.decompose()
-                continue
-            image['loading'] = 'lazy'
-        html = str(document)
-        def safe_attribute(tag, name, value):
-            if tag=='img':
-                return (name in {'alt','title','loading'} or name=='src' and
-                        bool(re.fullmatch(r'/(?:media|draft-media)/[a-f0-9]{32}',value)))
-            if tag=='a':
-                return name in {'href','title'}
-            if tag=='code':
-                return name=='class'
-            return tag in {'span','div'} and name=='class' and value=='arithmatex'
-        return Markup(bleach.clean(html, tags={"p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "a", "strong", "em", "del", "blockquote", "ul", "ol", "li", "code", "pre", "table", "thead", "tbody", "tr", "th", "td", "span", "div", "img"},
-                                 attributes=safe_attribute, protocols=["http", "https", "mailto"], strip=True))
 
     app.jinja_env.filters["markdown"] = render_md
 
-    @app.post('/markdown/preview')
-    def markdown_preview():
-        content = request.form.get('content','')
-        if len(content) > 200000:
-            return jsonify(error='预览正文超过 20 万字，请拆分记录。'), 400
-        return jsonify(html=str(render_md(content)))
-
-    def send_image(raw):
-        try:
-            info = inspect_image(raw)
-        except ValueError:
-            abort(415, '附件不是有效的静态 PNG、JPEG 或 WebP 图片。')
-        response = send_file(io.BytesIO(raw), mimetype=info['mimetype'], max_age=0)
-        response.headers['Cache-Control'] = 'private, no-store'
-        return response
-
-    @app.get('/media/<identifier>')
-    def image_media(identifier):
-        if not UUID.fullmatch(identifier):
-            abort(404)
-        row = db().execute('SELECT storage_name FROM attachments WHERE storage_name=?',(identifier,)).fetchone()
-        if not row:
-            abort(404)
-        path = directory/'uploads'/row['storage_name']
-        if path.is_symlink() or not path.is_file():
-            abort(404)
-        with path.open('rb') as stream:
-            return send_image(stream.read(MAX_IMAGE_BYTES+1))
-
-    @app.get('/draft-media/<identifier>')
-    def draft_media(identifier):
-        if not UUID.fullmatch(identifier):
-            abort(404)
-        # A real, validated draft must own this asset; knowing a filename is insufficient.
-        for draft in list_drafts(directory, limit=500):
-            for image in draft.get('images',[]):
-                if image['id']==identifier:
-                    try:
-                        with asset_path(directory, identifier, image['extension']).open('rb') as stream:
-                            return send_image(stream.read(MAX_IMAGE_BYTES+1))
-                    except OSError:
-                        abort(404)
-        abort(404)
+    register_media_routes(app, directory, db)
 
     @app.get('/diagrams/renderer')
     def diagram_renderer():
@@ -567,13 +501,15 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
 
     def chat_messages(identifier):
         messages = []
-        for row in db().execute('SELECT * FROM ai_messages WHERE thread_id=? ORDER BY created_at,id', (identifier,)):
+        for row in db().execute('''SELECT m.*,p.state AS progress_state FROM ai_messages m
+                                  LEFT JOIN assistant_progress p ON p.message_id=m.id
+                                  WHERE m.thread_id=? ORDER BY m.created_at,m.id''',(identifier,)):
             message = dict(row)
+            saved_state = message.pop('progress_state')
             message['sources'] = json.loads(message['sources'])
             message['html'] = str(render_md(message['content']))
-            saved = db().execute('SELECT state FROM assistant_progress WHERE message_id=?',(message['id'],)).fetchone()
-            if saved:
-                progress = json.loads(saved['state'])
+            if saved_state:
+                progress = json.loads(saved_state)
                 output = progress.pop('output','')
                 progress['output_html'] = str(render_md(output)) if output else ''
                 began = datetime.fromisoformat(message['created_at'])
@@ -587,7 +523,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         return messages
 
     def save_assistant_progress(identifier, event):
-        if event.get('stage') not in {'queued','reading','generating','complete','error'}:
+        if event.get('stage') not in {'queued','reading','generating','illustrating','layout','complete','error'}:
             return
         saved = db().execute('SELECT state FROM assistant_progress WHERE message_id=?',(identifier,)).fetchone()
         state = json.loads(saved['state']) if saved else {}
@@ -596,6 +532,8 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         if not events or events[-1]['detail']!=detail:
             events.append({'stage':event['stage'],'detail':detail,'at':stamp})
         state.update(stage=event['stage'], detail=detail, events=events[-40:])
+        if isinstance(event.get('image_requested'),bool):
+            state['image_requested'] = event['image_requested']
         if isinstance(event.get('output'),str):
             state['output'] = event['output'][:60000]
         if event['stage'] in {'complete','error'}:
@@ -621,10 +559,11 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         thread = chat_thread(identifier)
         # A killed server must not leave a conversation waiting forever.
         cutoff = datetime.fromtimestamp(time.time()-240, timezone.utc).isoformat(timespec='microseconds')
-        expired = db().execute("SELECT id FROM ai_messages WHERE thread_id=? AND status='pending' AND created_at<?",
-                               (identifier,cutoff)).fetchall()
-        db().execute("UPDATE ai_messages SET status='error',content='回答已中断或超时，请重新发送问题。' WHERE thread_id=? AND status='pending' AND created_at<?",
-                     (identifier,cutoff))
+        image_cutoff = datetime.fromtimestamp(time.time()-600, timezone.utc).isoformat(timespec='microseconds')
+        expiration = "thread_id=? AND status='pending' AND created_at<CASE WHEN id IN (SELECT message_id FROM assistant_progress WHERE json_extract(state,'$.image_requested')=1) THEN ? ELSE ? END"
+        expired = db().execute('SELECT id FROM ai_messages WHERE '+expiration,(identifier,image_cutoff,cutoff)).fetchall()
+        db().execute("UPDATE ai_messages SET status='error',content='回答已中断或超时，请重新发送问题。' WHERE "+expiration,
+                     (identifier,image_cutoff,cutoff))
         db().commit()
         for message in expired:
             save_assistant_progress(message['id'], {'stage':'error','detail':'回答已中断或超时，请重新发送问题。'})
@@ -645,6 +584,10 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         question = request.form.get('message', '').strip()
         if not question or len(question) > 4000:
             return jsonify(error='请输入问题，最多 4000 字。'), 400
+        try:
+            illustrated = wants_illustration(question,request.form.get('illustrated','auto'))
+        except ValueError as error:
+            return jsonify(error=str(error)),400
         bridge = app.extensions['codex_bridge']
         try:
             if not bridge.status()['available']:
@@ -719,9 +662,9 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
                      (answer_id, identifier, json.dumps(references,ensure_ascii=False), now()))
         db().execute('UPDATE ai_threads SET updated_at=? WHERE id=?', (now(),identifier))
         db().commit()
-        streaming = request.form.get('stream')=='1'
+        streaming = request.form.get('stream')=='1' or illustrated
         if streaming:
-            save_assistant_progress(answer_id, {'stage':'queued','detail':f'已整理 {len(sources)} 条参考记录，准备提交本机 Codex。'})
+            save_assistant_progress(answer_id, {'stage':'queued','detail':f'已整理 {len(sources)} 条参考记录，准备提交本机 Codex。'+('本轮将在文字之后生成一张 img2 配图。' if illustrated else ''), 'image_requested':illustrated})
         history = [{'role': item['role'], 'content': item['content'][:2000]}
                    for item in previous if item['status']=='complete'][-10:]
         if thread['context_id'] and sources and sources[0]['kind']=='paper':
@@ -737,18 +680,15 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
                     pending = db().execute('SELECT status FROM ai_messages WHERE id=?',(answer_id,)).fetchone()
                     if pending and pending['status']=='pending':
                         save_assistant_progress(answer_id,event)
-            error = None
-            try:
-                options = {'on_progress':report} if streaming else {}
-                answer = bridge.answer(question, history, sources, **options, **selection)
-            except BridgeError as failure:
-                error = answer = str(failure)
-            except Exception:
-                error = answer = '本次回答未完成，问题已保留。请检查 Codex 登录与网络后重试。'
+            turn = ChatTurn(question, thread['title'], thread['project_id'], history, sources, selection, illustrated)
+            reply = generate_chat_reply(turn, bridge, directory, on_progress=report if streaming else None)
+            answer, error, image_draft = reply.content, reply.error, reply.draft
             with app.app_context(), workspace.lock:
                 result = db().execute("UPDATE ai_messages SET content=?,status=? WHERE id=? AND status='pending'",
                                      (answer, 'error' if error else 'complete', answer_id))
                 db().execute('UPDATE ai_threads SET updated_at=? WHERE id=?', (now(),identifier))
+                if image_draft and result.rowcount:
+                    db().execute('INSERT INTO assistant_drafts VALUES (?,?)',(answer_id,image_draft['id']))
                 db().commit()
                 if streaming and result.rowcount:
                     save_assistant_progress(answer_id, {'stage':'error' if error else 'complete',
@@ -780,6 +720,11 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
         if message is None:
             abort(404)
         thread = chat_thread(message['thread_id'])
+        asset_manifest = db().execute('SELECT draft_id FROM assistant_drafts WHERE message_id=?',(message['id'],)).fetchone()
+        draft = checked_draft(asset_manifest['draft_id']) if asset_manifest else None
+        if draft and imported_record(draft['id']):
+            flash('这份图文草稿已保存，打开已有记录。','success')
+            return redirect(url_for('detail',identifier=imported_record(draft['id'])))
         target = request.form.get('target_id') or None
         if target:
             entry = get_entry(target)
@@ -797,7 +742,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             editing, submit_url = False, url_for('new',kind=kind)
         flash('这是尚未保存的 AI 草稿。请核对事实与引用，编辑并点击保存后才会写入资料。','success')
         return render_template('editor.html', active=kind, kind=kind, entry=entry,
-                               projects=projects(), editing=editing, submit_url=submit_url)
+                               projects=projects(), editing=editing, submit_url=submit_url,import_draft=draft)
 
     @app.route("/setup", methods=["GET", "POST"])
     def setup():
@@ -1139,16 +1084,25 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
     @app.route("/entry/<identifier>/edit", methods=["GET", "POST"])
     def edit(identifier):
         entry = get_entry(identifier)
+        draft = None
         if request.method == "POST":
+            import_id = request.form.get('import_id') or None
+            if import_id:
+                saved = imported_record(import_id)
+                if saved:
+                    if saved != identifier:
+                        abort(409,'这份草稿已保存到其他记录，未修改当前资料。')
+                    return redirect(url_for('detail',identifier=identifier))
+                draft = checked_draft(import_id)
             try:
-                save_entry(entry["kind"], entry)
+                save_entry(entry["kind"], entry,import_id=import_id)
                 flash("修改已保存到本机。换电脑前，请同步到 GitHub。", "success")
                 return redirect(url_for("detail", identifier=identifier))
             except ValueError as error:
                 db().rollback()
                 flash(str(error), "error")
                 entry = {**entry, **request.form, "meta": dict(request.form)}
-                return render_template("editor.html", active=entry["kind"], kind=entry["kind"], entry=entry, projects=projects(), editing=True), 409
+                return render_template("editor.html", active=entry["kind"], kind=entry["kind"], entry=entry, projects=projects(), editing=True,import_draft=draft), 409
         return render_template("editor.html", active=entry["kind"], kind=entry["kind"], entry=entry, projects=projects(), editing=True)
 
     @app.get("/entry/<identifier>")

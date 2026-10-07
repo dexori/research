@@ -5,13 +5,13 @@
 <div class="learning-workbench">
 <section class="panel learning-panel">
   <h2>今天想学什么？</h2>
-  <p class="small muted">使用本机 {{ bridge.profile }}，终端默认模型为 {{ bridge.model }}。仅本功能允许联网检索，不会发送其他私有笔记；会使用终端服务的额度。搜索能力取决于当前服务，登录成功并不代表可搜索。</p>
+  <p class="small muted">沿用本机 Codex 登录与额度，默认模型 {{ bridge.model }}。只检索公开资料，不发送其他私有笔记。</p>
   <form data-learning-form action="{{ url_for('learning_start') }}" method="post">
     <input type="hidden" name="csrf" value="{{ csrf() }}">
     {% set model_prefix='learning' %}{% include '_codex_selection.html' %}
     <label for="learning-mode">检索方式</label>
-    <select id="learning-mode" name="mode"><option value="public">平台检索 arXiv 原论文（推荐，无需搜索 API Key）</option><option value="codex">Codex 网页搜索（当前服务尚未验证成功）</option></select>
-    <p class="small muted">文献模式适合 ACT、π0 等论文主题：平台检索并提取正文，终端负责整理。它不是全网搜索；其他主题可补充英文术语。若需要官方文档等非论文来源，可尝试 Codex 网页搜索，但当前服务测试没有返回可用搜索记录。</p>
+    <select id="learning-mode" name="mode"><option value="public">arXiv 原论文</option><option value="codex">Codex 网页搜索</option></select>
+    <p class="small muted">论文主题推荐 arXiv；官方文档等主题可用网页搜索。搜索需当前 Codex 服务支持。</p>
     <label for="learning-topic">学习主题</label>
     <input id="learning-topic" name="topic" required maxlength="240" placeholder="例如：ACT 框架（机器人模仿学习），重点解释 action chunking 与 CVAE">
     <div class="tag-list learning-examples"><button class="button secondary" type="button" data-topic="ACT 框架（机器人模仿学习），重点解释 action chunking、CVAE 和 temporal ensembling">ACT 框架</button><button class="button secondary" type="button" data-topic="π0 架构，重点解释 VLM、action expert 与 flow matching；不要混用 π0.5">π0 架构</button><button class="button secondary" type="button" data-topic="Flow matching 的数学直觉、训练目标和机器人动作生成的最小例子">Flow matching</button></div>
@@ -33,9 +33,9 @@
     <span data-stage="planning">确定主题</span><span data-stage="searching">查找资料</span><span data-stage="reading">读取正文</span><span data-stage="generating">生成知识卡</span><span data-stage="validating">检查来源</span><span data-stage="illustrating">img2 配图</span><span data-stage="layout">图文排版</span>
   </div>
   <div data-learning-sources class="learning-sources"></div>
-  <h3>过程记录</h3><ol class="learning-events" data-learning-events><li class="muted">等待开始，不会模拟进度。</li></ol>
+  <h3>过程记录</h3><ol class="learning-events" data-learning-events><li class="muted">准备开始</li></ol>
   <details class="learning-output"><summary>公开输出预览 <span class="small muted">· 未审核</span></summary>
-    <p class="small muted">这里只显示助手公开回复，不显示内部思考。终端可能在完成时才返回正文；等待期间仍可查看真实阶段和用时。</p>
+    <p class="small muted">预览内容，确认后再保存。</p>
     <div class="markdown research-reading" data-learning-output><p class="muted">尚未收到公开正文。</p></div>
   </details>
   <div data-learning-review></div>

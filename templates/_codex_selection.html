@@ -3,8 +3,8 @@
     <div><label for="{{ model_prefix }}-model">模型</label>
       <select id="{{ model_prefix }}-model" name="model" data-model-select>
         <option value="">跟随终端 · {{ bridge.model }}</option>
-        {% if bridge.model not in ['跟随终端默认模型','无法读取配置'] %}<option value="{{ bridge.model }}">{{ bridge.model }} · 指定名称</option>{% endif %}
-        {% if bridge.model!='gpt-6.1-sol' %}<option value="gpt-6.1-sol">gpt-6.1-sol · 名称预设，未验证权限</option>{% endif %}
+        {% if bridge.model not in ['跟随终端默认模型','无法读取配置'] %}<option value="{{ bridge.model }}">{{ bridge.model }}</option>{% endif %}
+        {% if bridge.model!='gpt-6.1-sol' %}<option value="gpt-6.1-sol">gpt-6.1-sol</option>{% endif %}
         <option value="__custom__">自定义模型名称…</option>
       </select>
     </div>
@@ -17,6 +17,6 @@
   </div>
   <div data-custom-model-field hidden><label for="{{ model_prefix }}-custom-model">服务提供的模型名称</label><input id="{{ model_prefix }}-custom-model" name="custom_model" data-custom-model maxlength="120" placeholder="填写准确的模型 ID，不是 API Key" autocomplete="off" disabled></div>
   <p class="small muted codex-selection-summary" data-model-summary aria-live="polite">下一次调用跟随终端配置。</p>
-  <p class="small muted codex-selection-help">仅在本浏览器记住选择，不修改终端配置。模型与档位需当前服务支持；名称预设不代表已验证可用，不支持时会报错。</p>
+  <p class="small muted codex-selection-help">模型与思考强度以当前登录服务支持为准。</p>
   <button type="button" class="text-button" data-model-reset>恢复跟随终端</button>
 </div>

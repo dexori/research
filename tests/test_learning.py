@@ -67,7 +67,7 @@ class LearningTest(unittest.TestCase):
         draft_id = result['review_url'].split('/')[-1]
         draft = load_draft(self.directory, draft_id)
         page = self.client.get(result['review_url'])
-        self.assertIn('审核知识卡'.encode(), page.data)
+        self.assertIn('审核草稿'.encode(), page.data)
         self.assertIn(b'name="knowledge_category"', page.data)
         self.assertIn(b'katex', page.data)
         saved = self.post('/new/knowledge', import_id=draft_id, title='审核后的 ACT', content=draft['content'],

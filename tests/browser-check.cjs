@@ -157,12 +157,12 @@ const {execFileSync} = require('node:child_process');
       await page.locator('#chat-message').fill('根据这条笔记帮我设计对照实验');
       await page.getByRole('button',{name:'发送给 Codex',exact:true}).click();
       await page.locator('.chat-message.assistant.pending .chat-progress').waitFor();
-      assert.match(await page.locator('.chat-message.assistant.pending .chat-progress').textContent(),/真实调用状态/);
+      assert.ok(await page.locator('.chat-message.assistant.pending .chat-progress ol li').count()>=1);
       assert.equal(await page.getByRole('button',{name:'Codex 正在回答…',exact:true}).isDisabled(),true);
       await page.screenshot({path:path.join(output,'research-assistant-progress-desktop.png'),fullPage:true});
       await page.locator('.chat-message.assistant.complete').waitFor();
       await page.locator('.chat-message.assistant .katex').first().waitFor();
-      assert.match(await page.locator('.chat-message.assistant .chat-progress').textContent(),/真实调用状态/);
+      assert.ok(await page.locator('.chat-message.assistant .chat-progress ol li').count()>=1);
       await page.locator('.chat-message.assistant [data-diagram-ready]').waitFor();
       assert.equal(await page.locator('.chat-message.assistant .katex').count(),2);
       assert.match(await page.locator('.chat-message.assistant').textContent(),/browser-test-model/);
@@ -203,6 +203,24 @@ const {execFileSync} = require('node:child_process');
       // Deliberately leave this append draft unsaved and confirm original content was not changed.
       await page.goto(paperUrl);
       assert.equal(await page.getByRole('heading',{name:'与 Codex 的讨论草稿（待审核）',exact:true}).count(),0);
+      // Natural-language image request, without adding a mode selector.
+      await page.goto(threadUrl);
+      assert.equal(await page.locator('[data-model-select] option').filter({hasText:'未验证权限'}).count(),0);
+      assert.equal(await page.locator('[data-chat-form] [name=illustrated]').count(),0);
+      await page.locator('#chat-message').fill('你怎么不用img2生成插入图片');
+      await page.getByRole('button',{name:'发送给 Codex',exact:true}).click();
+      await page.waitForFunction(()=>document.querySelectorAll('.chat-message').length===6);
+      await page.locator('.chat-message.assistant.complete').nth(2).locator('.reading-image').waitFor();
+      await page.waitForFunction(()=>document.querySelectorAll('.chat-message.assistant.complete')[2].querySelector('.reading-image').naturalWidth>0);
+      await page.screenshot({path:path.join(output,'chat-automatic-image-desktop.png'),fullPage:true});
+      await page.reload();
+      await page.locator('.chat-message.assistant.complete').nth(2).locator('.reading-image').waitFor();
+      await page.locator('.chat-draft-form').last().locator('button').click();
+      assert.equal(await page.locator('[name=include_image]:checked').count(),1);
+      assert.match(await page.locator('#content').inputValue(),/浏览器实际修改/);
+      await page.getByRole('button',{name:'保存文献',exact:true}).click();
+      await page.locator('.prose.research-reading .reading-image').waitFor();
+      assert.match(await page.locator('.prose.research-reading .reading-image').getAttribute('src'),/^\/media\/[a-f0-9]{32}$/);
     }
     if (process.env.TEST_DATA_DIR) {
       await page.setViewportSize({width:1440,height:1080});

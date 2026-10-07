@@ -22,7 +22,7 @@ if (chat) {
       label.textContent = item.role === 'user' ? '我' : `Codex · 科研助手${item.status === 'error' ? ' · 未完成' : ''}`;
       const body = document.createElement('div');
       body.className = 'chat-message-body';
-      if (item.status === 'pending') body.innerHTML = item.progress?.output_html || '<p class="muted">等待终端公开输出。部分服务只在完成时返回正文，期间可查看下方真实阶段与用时。</p>';
+      if (item.status === 'pending') body.innerHTML = item.progress?.output_html || '<p class="muted">正在整理回答…</p>';
       else body.innerHTML = item.html; // HTML is sanitized by the authenticated backend.
       article.append(label,body);
       if (item.progress) {
@@ -40,8 +40,7 @@ if (chat) {
           stamp.textContent=new Date(event.at).toLocaleTimeString('zh-CN',{hour12:false});
           row.append(stamp,document.createTextNode(event.detail)); list.append(row);
         }
-        const note=document.createElement('p'); note.className='small muted';note.textContent='显示真实调用状态与助手公开输出，不包含内部思考原文，不模拟执行日志。';
-        progress.append(summary,time,list,note); article.append(progress);
+        progress.append(summary,time,list); article.append(progress);
       }
       if (item.role === 'assistant' && item.status === 'complete') {
         const sources = document.createElement('div'); sources.className = 'chat-sources';
@@ -69,7 +68,8 @@ if (chat) {
     busy = messages.some(item => item.status === 'pending');
     button.disabled = busy;
     button.textContent = busy ? 'Codex 正在回答…' : '发送给 Codex';
-    status.textContent = busy ? '正在调用本机 Codex，最多等待 3 分钟；可以在其他页面继续工作。' : '回答不会自动写入笔记，保存前请核对事实与引用。';
+    const illustrating=messages.some(item=>item.status==='pending' && item.progress?.image_requested);
+    status.textContent = busy ? (illustrating ? '正在整理图文回复，配图可能需要几分钟；可以在其他页面继续工作。' : 'Codex 正在回答；可以在其他页面继续工作。') : '审核保存后才会写入笔记。';
   };
   clock=setInterval(()=>{
     if (submittingAt) status.textContent=`正在提交问题与参考资料… 已等待 ${Math.floor((Date.now()-submittingAt)/1000)} 秒`;
@@ -126,7 +126,7 @@ if (chat) {
     if (event.key==='Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault();form.requestSubmit(); }
   });
   document.querySelectorAll('[data-chat-prompt]').forEach(item => item.addEventListener('click',() => {input.value=item.dataset.chatPrompt;input.focus();}));
-  if (container.querySelector('.pending')) timer=setTimeout(poll,1500);
+  if (chat.dataset.threadId) timer=setTimeout(poll,100);
 }
 
 document.querySelectorAll('[data-codex-check]').forEach(form=>form.addEventListener('submit', async event=>{

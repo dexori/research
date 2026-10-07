@@ -13,6 +13,26 @@ DRAFT_IMAGE = re.compile(r'!\[([^\]\n]*)\]\(/draft-media/([a-f0-9]{32})\)')
 PORTABLE_IMAGE = re.compile(r'\.\./attachments/([a-f0-9]{32})/attachment\.(png|jpg|jpeg|webp)\Z')
 
 
+def wants_illustration(question, mode='auto'):
+    """Explicit requests only; capability questions and refusals do not spend quota."""
+    if mode not in {'auto','0','1'}:
+        raise ValueError('请选择有效的配图方式。')
+    if mode!='auto':
+        return mode=='1'
+    text=question.lower()
+    tool=r'(?:img\s*2|imagegen|gpt-image-2)'
+    complaint=bool(re.search(r'(?:为什么|怎么|为何)(?:不|没有)(?:用|使用|调用).*'+tool,text))
+    if (not complaint and re.search(r'(?:不要|不用|不需要|无需|暂不).{0,12}(?:图片|插图|配图)',text)) or '只用mermaid' in text.replace(' ',''):
+        return False
+    if not complaint and (re.search(r'(?:不要|不用|别用|不使用|不调用|暂不|无需).*'+tool,text)
+                          or re.search(r'(?:怎么用|如何|怎样|能否|能不能|是否|支持|可以).*'+tool,text)
+                          or re.search(tool+r'.{0,30}(?:可以.{0,24}吗|能用吗|是什么|怎么用|能不能|支持吗)',text)):
+        return False
+    return bool(re.search(r'(?:用|使用|调用|\$)\s*'+tool+r'.{0,100}(?:生成|画|配图|图片|插图)',text)
+                or re.search(tool,text)
+                or re.search(r'(?:生成|画|绘制|插入|添加).{0,24}(?:图片|配图|插图|架构图|框架图)',text))
+
+
 def inspect_image(raw):
     if not raw or len(raw) > MAX_IMAGE_BYTES:
         raise ValueError('图片为空或超过 16 MB。')
