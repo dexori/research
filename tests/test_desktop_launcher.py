@@ -70,6 +70,21 @@ class LauncherTest(unittest.TestCase):
             self.assertEqual(env['RESEARCH_CODEX_BIN'],'/chosen/codex')
             self.assertEqual(env['RESEARCH_CODEX_HOME'],'/old/profile')
 
+    def test_desktop_reuses_saved_proxies_and_preserves_explicit_environment(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)
+            (path/'desktop-launcher.json').write_text(json.dumps({
+                'HTTPS_PROXY': 'http://127.0.0.1:7897',
+                'RESEARCH_PAPER_PROXY': 'http://127.0.0.1:7897',
+                'NO_PROXY': 'localhost,127.0.0.1',
+                'SECRET': 'must-not-copy'}))
+            with patch.dict(os.environ, {'HTTPS_PROXY': 'http://127.0.0.1:7898'}, clear=True):
+                environment = launch_environment(path)
+            self.assertEqual(environment['HTTPS_PROXY'], 'http://127.0.0.1:7898')
+            self.assertEqual(environment['RESEARCH_PAPER_PROXY'], 'http://127.0.0.1:7897')
+            self.assertEqual(environment['NO_PROXY'], 'localhost,127.0.0.1')
+            self.assertNotIn('SECRET', environment)
+
     def test_desktop_entry_quotes_paths_and_never_runs_shell(self):
         entry=desktop_entry('/tmp/Research Hub % copy')
         self.assertIn('Name=研序科研工作台',entry)

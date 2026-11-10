@@ -9,7 +9,7 @@ from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
 from paper_reader import PaperError, PaperReader, public_target, paper_url, download, extract_pdf, MAX_DOWNLOAD
 
 
-def pdf_bytes(encrypted=False):
+def pdf_bytes(encrypted=False, padding=0):
     writer = PdfWriter()
     page = writer.add_blank_page(width=600, height=800)
     font = writer._add_object(DictionaryObject({NameObject('/Type'): NameObject('/Font'),
@@ -20,11 +20,19 @@ def pdf_bytes(encrypted=False):
     page[NameObject('/Contents')] = writer._add_object(stream)
     if encrypted:
         writer.encrypt('secret')
+    if padding:
+        writer.add_metadata({'/TestPadding': 'x' * padding})
     output = io.BytesIO(); writer.write(output)
     return output.getvalue()
 
 
 class PaperReaderTest(unittest.TestCase):
+    def test_pdf_larger_than_twenty_mb_is_readable(self):
+        raw = pdf_bytes(padding=21 * 1024 * 1024)
+        result = extract_pdf(raw)
+        self.assertIn('methods evidence', result['text'])
+        self.assertEqual(result['pages'], 1)
+
     def test_pdf_real_extraction_and_failures(self):
         result = extract_pdf(pdf_bytes())
         self.assertIn('methods evidence', result['text'])

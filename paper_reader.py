@@ -17,7 +17,8 @@ from urllib.parse import parse_qs, quote, urlencode, urljoin, urlsplit, urlunspl
 
 from bs4 import BeautifulSoup
 
-MAX_DOWNLOAD = 20 * 1024 * 1024
+MAX_DOWNLOAD_MB = 50
+MAX_DOWNLOAD = MAX_DOWNLOAD_MB * 1024 * 1024
 MAX_TEXT = 180000
 
 
@@ -86,7 +87,7 @@ def download(url, deadline):
                 raise PaperError(f'论文站点返回 HTTP {response.status}；未读取正文，请上传公开 PDF 或稍后重试。')
             size = response.getheader('Content-Length', '')
             if size.isdigit() and int(size) > MAX_DOWNLOAD:
-                raise PaperError('论文文件超过 20 MB 的读取上限。')
+                raise PaperError(f'论文文件超过 {MAX_DOWNLOAD_MB} MB 的读取上限。')
             if response.getheader('Content-Encoding', 'identity').lower() not in {'identity', ''}:
                 raise PaperError('论文站点返回了暂不支持的压缩格式，请上传 PDF。')
             chunks, total = [], 0
@@ -101,7 +102,7 @@ def download(url, deadline):
                     break
                 total += len(chunk)
                 if total > MAX_DOWNLOAD:
-                    raise PaperError('论文文件超过 20 MB 的读取上限。')
+                    raise PaperError(f'论文文件超过 {MAX_DOWNLOAD_MB} MB 的读取上限。')
                 chunks.append(chunk)
             return b''.join(chunks), response.getheader('Content-Type', ''), url
         except (OSError, UnicodeError, http.client.HTTPException):
@@ -126,7 +127,7 @@ def paper_url(url):
 
 def extract_pdf(raw):
     if len(raw) > MAX_DOWNLOAD or not raw.lstrip().startswith(b'%PDF-'):
-        raise PaperError('不是有效 PDF，或超过 20 MB 的读取上限。')
+        raise PaperError(f'不是有效 PDF，或超过 {MAX_DOWNLOAD_MB} MB 的读取上限。')
     try:
         result = subprocess.run([sys.executable, str(Path(__file__).resolve()), '--pdf-worker'],
                                 input=raw, capture_output=True, timeout=25)
@@ -179,7 +180,7 @@ class PaperReader:
         try:
             if raw is not None:
                 return extract_pdf(raw)
-            deadline = time.monotonic() + 35
+            deadline = time.monotonic() + 120
             target = paper_url(url)
             for attempt in range(2):
                 body, mime, final = download(target, deadline)

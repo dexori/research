@@ -17,6 +17,9 @@ from git_sync import atomic_write
 ROOT = Path(__file__).resolve().parent
 URL = 'http://127.0.0.1:8765'
 MARKER = 'X-ResearchHub-Launcher=true'
+LAUNCH_SETTINGS = ('RESEARCH_CODEX_BIN', 'RESEARCH_CODEX_HOME', 'RESEARCH_PAPER_PROXY',
+                   'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+                   'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy')
 
 
 class LaunchError(Exception):
@@ -45,7 +48,7 @@ def launch_environment(directory):
             config = json.loads(path.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             raise LaunchError('启动设置无法读取，请重新安装桌面图标。') from None
-        for name in ['RESEARCH_CODEX_BIN', 'RESEARCH_CODEX_HOME']:
+        for name in LAUNCH_SETTINGS:
             if name not in environment and isinstance(config.get(name), str):
                 environment[name] = config[name]
     return environment
@@ -153,9 +156,9 @@ def install(root=ROOT):
     for target in targets:
         atomic_write(target, entry)
         target.chmod(0o755)
-    # Persist paths only, not credentials or provider settings. Desktop sessions
-    # may have a shorter PATH than the terminal used to install the launcher.
-    config = {name: os.environ[name] for name in ['RESEARCH_CODEX_BIN', 'RESEARCH_CODEX_HOME'] if os.environ.get(name)}
+    # Keep launcher paths and proxy settings in private local data. Desktop
+    # sessions do not inherit the terminal's PATH or network environment.
+    config = {name: os.environ[name] for name in LAUNCH_SETTINGS if os.environ.get(name)}
     binary = config.get('RESEARCH_CODEX_BIN') or shutil.which('codex')
     if binary:
         config['RESEARCH_CODEX_BIN'] = str(Path(binary).resolve())

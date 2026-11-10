@@ -29,7 +29,7 @@ from markdown_rendering import render_md
 from media_routes import register_media_routes
 from monitoring_routes import register_monitoring_routes
 from assistant_workflow import ChatTurn, generate_chat_reply
-from paper_reader import PaperReader, PaperError
+from paper_reader import PaperReader, PaperError, MAX_DOWNLOAD, MAX_DOWNLOAD_MB
 from learning import CATEGORIES as KNOWLEDGE_CATEGORIES, prepare_card, PublicLearningSearch
 from research_images import (MAX_IMAGE_BYTES, DRAFT_IMAGE, inspect_image,
                              asset_path, stage_image, insert_illustration, illustration_prompt, wants_illustration)
@@ -213,7 +213,8 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
     def context():
         return {"kinds": KINDS, "statuses": STATUSES, "csrf": csrf, "knowledge_categories": KNOWLEDGE_CATEGORIES,
                 "today": datetime.now().strftime("%Y年%m月%d日"), "app_name": "研序 Research Hub",
-                "workspace_error": workspace.error, "reasoning_efforts": REASONING_EFFORTS}
+                "workspace_error": workspace.error, "reasoning_efforts": REASONING_EFFORTS,
+                "paper_limit_mb": MAX_DOWNLOAD_MB}
 
     def now():
         return datetime.now(timezone.utc).isoformat(timespec="microseconds")
@@ -441,8 +442,8 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
             if not row or not row['name'].lower().endswith('.pdf'):
                 raise PaperError('请选择这篇文献的 PDF 附件。')
             path = directory / 'uploads' / row['storage_name']
-            if row['size'] > 20 * 1024 * 1024 or path.is_symlink():
-                raise PaperError('PDF 超过 20 MB 读取上限或路径无效。')
+            if row['size'] > MAX_DOWNLOAD or path.is_symlink():
+                raise PaperError(f'PDF 超过 {MAX_DOWNLOAD_MB} MB 读取上限或路径无效。')
             raw = path.read_bytes()
             attachment_name = row['name']
         elif not original_url:

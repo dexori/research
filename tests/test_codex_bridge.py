@@ -43,6 +43,25 @@ class CodexBridgeTest(unittest.TestCase):
         with patch.dict(os.environ, {'HOME': str(home), 'RESEARCH_CODEX_HOME': '~/custom-codex'}, clear=True):
             self.assertEqual(self.bridge.profile(), (home / 'custom-codex').resolve())
 
+    def test_npm_cli_uses_its_node_runtime_without_shell_path(self):
+        prefix = Path(self.temp.name) / 'node-install'
+        node = prefix / 'bin' / 'node'
+        node.parent.mkdir(parents=True)
+        node.symlink_to(sys.executable)
+        binary = prefix / 'lib' / 'node_modules' / '@openai' / 'codex' / 'bin' / 'codex.js'
+        binary.parent.mkdir(parents=True)
+        binary.write_text('import sys; print("runtime found"); sys.exit(0)')
+        with patch.dict(os.environ, {'PATH': '/usr/bin', 'RESEARCH_CODEX_BIN': str(binary)}, clear=True):
+            command = self.bridge.command()
+            self.assertEqual(command[:2], [str(node), str(binary)])
+            result = subprocess.run(command, capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout.strip(), 'runtime found')
+            self.assertEqual(self.bridge.login_status()['status'], 'signed_in')
+
+    def test_native_cli_command_preserves_binary(self):
+        self.assertEqual(self.bridge.cli_command('/usr/bin/true'), ['/usr/bin/true'])
+
     def test_per_call_model_effort_flags_keep_config_and_safety(self):
         profile=Path(self.temp.name)
         config_path=profile/'config.toml'

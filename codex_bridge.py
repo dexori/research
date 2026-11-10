@@ -166,6 +166,17 @@ class CodexBridge:
             return Path(configured).expanduser().resolve()
         return Path.home() / '.codex'
 
+    @staticmethod
+    def cli_command(binary):
+        """Use the npm installation's Node runtime even outside a login shell."""
+        resolved = Path(binary).resolve()
+        if resolved.suffix == '.js':
+            for parent in resolved.parents:
+                node = parent / 'bin' / 'node'
+                if node.is_file() and os.access(node, os.X_OK):
+                    return [str(node), binary]
+        return [binary]
+
     def config(self):
         path = self.profile() / 'config.toml'
         if not path.exists():
@@ -193,7 +204,7 @@ class CodexBridge:
         environment = os.environ.copy()
         environment['CODEX_HOME'] = str(self.profile())
         try:
-            result = subprocess.run([binary, 'login', 'status'], capture_output=True, timeout=8,
+            result = subprocess.run(self.cli_command(binary) + ['login', 'status'], capture_output=True, timeout=8,
                                     env=environment, encoding='utf-8', errors='replace')
         except (OSError, subprocess.TimeoutExpired):
             return {'status': 'unknown', 'message': '登录检查未完成，请在同一配置目录运行 codex login status。'}
@@ -209,7 +220,7 @@ class CodexBridge:
         if not binary or not Path(binary).is_file():
             raise BridgeError('这台电脑未找到 Codex CLI。请先安装并在终端登录，再启动平台。')
         config = self.config()
-        command = [binary, '--no-daemon', '-a', 'never']
+        command = self.cli_command(binary) + ['--no-daemon', '-a', 'never']
         if selection.get('model'):
             command += ['--model', selection['model']]
         if selection.get('reasoning_effort'):
