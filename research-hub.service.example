@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=z
 WorkingDirectory=/home/z/research-hub
-ExecStart=/home/z/research-hub/.venv/bin/python /home/z/research-hub/app.py --host 127.0.0.1 --port 8765
+ExecStart=/home/z/research-hub/.venv/bin/python /home/z/research-hub/app.py --host 127.0.0.1 --port 8766
 Environment=RESEARCH_DATA_DIR=/home/z/research-hub/data
 Restart=on-failure
 RestartSec=5

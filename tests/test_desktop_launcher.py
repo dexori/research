@@ -54,7 +54,7 @@ class LauncherTest(unittest.TestCase):
             with patch.dict(os.environ,{},clear=True), patch('desktop_launcher.probe',side_effect=['stopped','ready']), patch('desktop_launcher.subprocess.Popen',return_value=process) as popen:
                 self.assertTrue(ensure_running(root))
             args, kwargs=popen.call_args
-            self.assertEqual(args[0],[str(root/'.venv/bin/python'),str(root/'app.py'),'--host','127.0.0.1','--port','8765'])
+            self.assertEqual(args[0],[str(root/'.venv/bin/python'),str(root/'app.py'),'--host','127.0.0.1','--port','8766'])
             self.assertTrue(kwargs['start_new_session'])
             self.assertEqual(kwargs['env']['RESEARCH_CODEX_BIN'],'/private/bin/codex')
             self.assertNotIn('SECRET',kwargs['env'])

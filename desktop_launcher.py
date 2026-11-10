@@ -15,7 +15,8 @@ import time
 from git_sync import atomic_write
 
 ROOT = Path(__file__).resolve().parent
-URL = 'http://127.0.0.1:8765'
+DEFAULT_PORT = int(os.environ.get('RESEARCH_PORT', 8766))
+URL = f'http://127.0.0.1:{DEFAULT_PORT}'
 MARKER = 'X-ResearchHub-Launcher=true'
 LAUNCH_SETTINGS = ('RESEARCH_CODEX_BIN', 'RESEARCH_CODEX_HOME', 'RESEARCH_PAPER_PROXY',
                    'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
@@ -26,7 +27,7 @@ class LaunchError(Exception):
     pass
 
 
-def probe(port=8765):
+def probe(port=DEFAULT_PORT):
     connection = http.client.HTTPConnection('127.0.0.1', port, timeout=1)
     try:
         connection.request('GET', '/login')
@@ -54,7 +55,7 @@ def launch_environment(directory):
     return environment
 
 
-def ensure_running(root=ROOT, directory=None, port=8765, timeout=20):
+def ensure_running(root=ROOT, directory=None, port=DEFAULT_PORT, timeout=20):
     root = Path(root).resolve()
     directory = Path(directory or root / 'data').resolve()
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -114,7 +115,7 @@ def ensure_running(root=ROOT, directory=None, port=8765, timeout=20):
                 continue
             time.sleep(0.2)
         # Never stop an existing process or discard the user's data on a timeout.
-        raise LaunchError('平台仍在启动，请稍后打开 http://127.0.0.1:8765；启动日志保存在 data/desktop-server.log。')
+        raise LaunchError(f'平台仍在启动，请稍后打开 http://127.0.0.1:{port}；启动日志保存在 data/desktop-server.log。')
 
 
 def desktop_quote(value):

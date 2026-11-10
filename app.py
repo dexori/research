@@ -1375,7 +1375,7 @@ def create_app(data_dir=None, testing=False, repo_dir=None):
 def main():
     parser = argparse.ArgumentParser(description="Private Research Hub")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=int(os.environ.get("RESEARCH_PORT", 8766)))
     parser.add_argument("--set-password", action="store_true", help="Set/reset password interactively")
     args = parser.parse_args()
     app = create_app()

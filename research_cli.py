@@ -16,7 +16,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='科研工作台：终端草稿导入（保存前须在网页审核）')
     parser.add_argument('--data-dir',type=Path,default=Path(os.environ.get('RESEARCH_DATA_DIR',ROOT/'data')),
                         help='与平台相同的本机数据目录')
-    parser.add_argument('--port',type=int,default=8765,help='本机平台的监听端口')
+    parser.add_argument('--port',type=int,default=int(os.environ.get('RESEARCH_PORT', 8766)),help='本机平台的监听端口')
     sub = parser.add_subparsers(dest='command',required=True)
     importer = sub.add_parser('import',help='把一个 Markdown 文件暂存到网页草稿箱')
     importer.add_argument('file',type=Path)
