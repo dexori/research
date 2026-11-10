@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 import time
@@ -17,6 +18,30 @@ class CodexBridgeTest(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_default_profile_uses_codex_even_when_codex2_exists(self):
+        home = Path(self.temp.name)
+        (home / '.codex-gpt2').mkdir()
+        profile = home / '.codex'
+        profile.mkdir()
+        (profile / 'config.toml').write_text('model="codex-model"', encoding='utf-8')
+        with patch.dict(os.environ, {}, clear=True), patch('codex_bridge.Path.home', return_value=home):
+            self.assertEqual(self.bridge.profile(), profile)
+            status = self.bridge.status()
+        self.assertEqual(status['profile'], 'Codex')
+        self.assertEqual(status['model'], 'codex-model')
+
+    def test_default_profile_does_not_fall_back_to_codex2(self):
+        home = Path(self.temp.name)
+        (home / '.codex-gpt2').mkdir()
+        with patch.dict(os.environ, {}, clear=True), patch('codex_bridge.Path.home', return_value=home):
+            self.assertEqual(self.bridge.profile(), home / '.codex')
+            self.assertEqual(self.bridge.config(), {})
+
+    def test_explicit_profile_still_overrides_default(self):
+        home = Path(self.temp.name)
+        with patch.dict(os.environ, {'HOME': str(home), 'RESEARCH_CODEX_HOME': '~/custom-codex'}, clear=True):
+            self.assertEqual(self.bridge.profile(), (home / 'custom-codex').resolve())
 
     def test_per_call_model_effort_flags_keep_config_and_safety(self):
         profile=Path(self.temp.name)

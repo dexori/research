@@ -164,8 +164,7 @@ class CodexBridge:
         configured = os.environ.get('RESEARCH_CODEX_HOME')
         if configured:
             return Path(configured).expanduser().resolve()
-        specific = Path.home() / '.codex-gpt2'
-        return specific if specific.is_dir() else Path.home() / '.codex'
+        return Path.home() / '.codex'
 
     def config(self):
         path = self.profile() / 'config.toml'
@@ -176,13 +175,13 @@ class CodexBridge:
         try:
             return tomllib.loads(path.read_text(encoding='utf-8'))
         except (OSError, ValueError):
-            raise BridgeError('Codex 配置无法读取，请先确认 codex2 在终端可以正常使用。') from None
+            raise BridgeError('Codex 配置无法读取，请先确认 codex 在终端可以正常使用。') from None
 
     def status(self):
         binary = os.environ.get('RESEARCH_CODEX_BIN') or shutil.which('codex')
         config = self.config()
         return {'available': bool(binary and Path(binary).is_file()),
-                'profile': 'codex2' if self.profile().name == '.codex-gpt2' else 'Codex',
+                'profile': 'Codex',
                 'model': config.get('model', '跟随终端默认模型'),
                 'reasoning_effort': config.get('model_reasoning_effort', '终端默认'),
                 'read_only': True}
@@ -338,7 +337,7 @@ class CodexBridge:
             if len(prompt) > 110000:
                 raise BridgeError('对话上下文过长，请新建对话或缩小研究项目范围。')
             environment = os.environ.copy()
-            # This is the existing codex2 profile, not a new credential store.
+            # Reuse the selected Codex configuration and credentials.
             environment['CODEX_HOME'] = str(self.profile())
             environment.pop('CODEX_THREAD_ID', None)
             environment.pop('CODEX_SESSION_ID', None)
@@ -359,7 +358,7 @@ class CodexBridge:
                     self.stop(process)
                     raise BridgeError('本次 Codex 回答超时。问题已保留，请稍后重试或缩小问题范围。') from None
                 if process.returncode:
-                    raise BridgeError('Codex 调用未完成。请确认 codex2 在终端能正常对话，并检查登录、额度、网络及所选模型/思考强度是否受服务支持。问题已保留。')
+                    raise BridgeError('Codex 调用未完成。请确认 codex 在终端能正常对话，并检查登录、额度、网络及所选模型/思考强度是否受服务支持。问题已保留。')
                 if len(output) > 2 * 1024 * 1024:
                     raise BridgeError('Codex 返回内容过长，请缩小问题范围。')
                 answers, searches = [], []

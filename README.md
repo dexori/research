@@ -164,7 +164,7 @@ Windows 使用 `.venv\Scripts\python.exe research_cli.py ...`。自定义端口�
 
 待审核草稿在 `data/import-drafts/`，不会进入 GitHub；保存后的正式记录按现有流程同步。完整 ZIP 备份包含草稿箱和导入状态，恢复时一并把 `import-drafts/` 复制到新数据目录。本次只增加草稿导入，不会把终端整段会话自动同步成网页聊天历史。
 
-## 科研助手：沿用 codex2 终端
+## 科研助手：沿用 codex 终端
 
 打开左侧「科研助手」，选择项目并提问。一般讨论按关键词筛选最多 6 条记录；文献页则直接提供独立讨论区，默认只读取本篇笔记及已提取的原文，不检索其他文献。刷新或续聊仍保留该范围，历史讨论按文献区分。
 
@@ -172,7 +172,7 @@ Windows 使用 `.venv\Scripts\python.exe research_cli.py ...`。自定义端口�
 
 提取文本单独保存为 JSON 附件，随 workspace/ 与 GitHub 同步，不覆盖笔记。缓存绑定当前论文链接；修改链接后需重新读取。单篇最多提取 180,000 字符；专属讨论每次最多发送前 65,000 字符，一般检索的原文总预算 20,000 字符。截断会标记，模型必须说明收到的范围；图表、复杂公式与扫描图片不能视为已识别。答案下方显示实际传入原文字符数。
 
-本模式不需要在网页输入 API Key，但需要在**运行平台的这台电脑**安装、登录 Codex CLI，并能正常在终端对话。使用既有的终端配置、服务提供方、模型和额度，仍需要网络，额度与费用由该终端配置决定。默认优先使用 `~/.codex-gpt2`（即当前电脑的 `codex2` 配置），不存在时使用 `~/.codex`。可通过 `RESEARCH_CODEX_HOME` 指定既有配置目录、`RESEARCH_CODEX_BIN` 指定 Codex 可执行文件的绝对路径；不会执行 shell 函数或加载 `.zshrc`。新电脑仍需自行安装和登录 Codex，GitHub 不同步这些凭据。
+本模式不需要在网页输入 API Key，但需要在**运行平台的这台电脑**安装、登录 Codex CLI，并能正常在终端对话。使用既有的终端配置、服务提供方、模型和额度，仍需要网络，额度与费用由该终端配置决定。默认使用 `codex` 的 `~/.codex` 配置，不会自动选择其他终端配置目录。可通过 `RESEARCH_CODEX_HOME` 指定既有配置目录、`RESEARCH_CODEX_BIN` 指定 Codex 可执行文件的绝对路径；不会执行 shell 函数或加载 `.zshrc`。新电脑仍需自行安装和登录 Codex，GitHub 不同步这些凭据。
 
 网页的「换电脑：如何连接本机 Codex」有完整指引及登录检查按钮。按 [OpenAI Docs 安装说明](https://developers.openai.com/codex/cli)安装 CLI，在本机运行 `codex login`，然后运行 `codex` 确认能对话，再重启平台。设备码登录方式见 [官方登录文档](https://developers.openai.com/codex/auth)。登录检查只调用 `codex login status`，不消耗模型额度、不回传原始输出，不等于验证服务连通性。自定义服务需在新电脑单独配置，不要把凭据上传 GitHub。
 
